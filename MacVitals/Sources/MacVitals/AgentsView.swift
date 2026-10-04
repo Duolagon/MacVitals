@@ -229,13 +229,13 @@ private struct AgentSigil: View {
             var outer = Path()
             for i in 0...6 {
                 let angle = Double(i) * .pi / 3 - .pi / 2
-                let point = CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+                let point = CGPoint(x: center.x + CGFloat(Foundation.cos(angle)) * radius, y: center.y + CGFloat(Foundation.sin(angle)) * radius)
                 if i == 0 { outer.move(to: point) } else { outer.addLine(to: point) }
             }
             context.stroke(outer, with: .color(color.opacity(0.65)), lineWidth: 1)
             for i in 0..<6 {
                 let angle = Double(i) * .pi / 3 - .pi / 2
-                let point = CGPoint(x: center.x + cos(angle) * radius * 0.65, y: center.y + sin(angle) * radius * 0.65)
+                let point = CGPoint(x: center.x + CGFloat(Foundation.cos(angle)) * radius * 0.65, y: center.y + CGFloat(Foundation.sin(angle)) * radius * 0.65)
                 var spoke = Path(); spoke.move(to: center); spoke.addLine(to: point)
                 context.stroke(spoke, with: .color(color.opacity(i % 2 == seed % 2 ? 0.7 : 0.2)), lineWidth: 1)
                 context.fill(Path(CGRect(x: point.x - 1.5, y: point.y - 1.5, width: 3, height: 3)), with: .color(color))
@@ -248,7 +248,6 @@ private struct AgentSigil: View {
 struct AgentDetailsView: View {
     @ObservedObject var model: AgentsModel
     let instance: AgentProcessID
-    @State private var query = ""
     @State private var lastKnown: AgentUsage?
     private var current: AgentUsage? { model.latest.usages.first { $0.id == instance } }
     private var usage: AgentUsage? { current ?? lastKnown }
@@ -271,7 +270,10 @@ struct AgentDetailsView: View {
                 }.padding(16)
                 Rectangle().fill(accent.opacity(0.2)).frame(height: 1)
                 HStack(spacing: 0) {
-                    processNavigation(usage).frame(width: 270)
+                    AgentNeuralMap(usage: usage, root: instance, selected: selected?.id ?? instance,
+                                   accent: accent, live: current != nil && model.latest.available,
+                                   select: { selection = $0 })
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     Rectangle().fill(accent.opacity(0.2)).frame(width: 1)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
@@ -303,7 +305,7 @@ struct AgentDetailsView: View {
                                 Text("DATA CONTRACT / 指标口径与采集范围").font(.system(size: 9, design: .monospaced)).tracking(0.6)
                             }.tint(accent).padding(12).background(AgentsStyle.card)
                         }.padding(18)
-                    }
+                    }.frame(width: 390)
                 }
             } else {
                 Spacer()
@@ -317,7 +319,7 @@ struct AgentDetailsView: View {
                 Text("120s BUFFER · READ ONLY · LOCAL")
             }.font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary).padding(12)
                 .overlay(alignment: .top) { Rectangle().fill(accent.opacity(0.25)).frame(height: 1) }
-        }.frame(minWidth: 840, minHeight: 600)
+        }.frame(minWidth: 980, minHeight: 680)
             .background {
                 AgentsStyle.background
                 Canvas { context, size in
@@ -335,9 +337,9 @@ struct AgentDetailsView: View {
         HStack(spacing: 14) {
             AgentSigil(seed: 0, color: accent).frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 5) {
-                Text((usage?.kind.rawValue.uppercased() ?? "AGENT") + " // DEEP SCAN")
-                    .font(.system(size: 21, weight: .bold, design: .monospaced)).tracking(1)
-                Text("PROCESS OBSERVATORY / ROOT #" + String(instance.pid))
+                Text((usage?.kind.rawValue.uppercased() ?? "AGENT") + " / NEURAL ATLAS")
+                    .font(.system(size: 21, weight: .semibold)).tracking(0.6)
+                Text("LOCAL PROCESS NETWORK / ROOT #" + String(instance.pid))
                     .font(.system(size: 9, design: .monospaced)).tracking(1.6).foregroundStyle(accent.opacity(0.8))
             }
             Spacer()
@@ -352,7 +354,7 @@ struct AgentDetailsView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.system(size: 9, design: .monospaced)).tracking(1).foregroundStyle(accent)
             Text(value).font(.system(size: 23, weight: .medium, design: .monospaced)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
-            trace(channel).frame(height: 30)
+            trace(channel).frame(height: 18)
             Text(caption).font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(12).background(AgentsStyle.card)
             .overlay(Rectangle().stroke(accent.opacity(0.18), lineWidth: 1))
@@ -383,53 +385,15 @@ struct AgentDetailsView: View {
             }
         }.help("最近 120 秒真实采样，按当前窗口峰值自动缩放")
     }
-    private func processNavigation(_ usage: AgentUsage) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("PROCESS / TOPOLOGY").font(.system(size: 10, weight: .bold, design: .monospaced)).tracking(1).foregroundStyle(accent)
-                Spacer()
-                Image(systemName: "point.3.connected.trianglepath.dotted").foregroundStyle(accent)
-            }.padding(.horizontal, 14).padding(.top, 16)
-            HStack(spacing: 6) {
-                Text(">").foregroundStyle(accent)
-                TextField("搜索节点 / PID / 路径", text: $query).textFieldStyle(.plain)
-            }.font(.system(size: 10, design: .monospaced)).padding(9).background(Color.black.opacity(0.4)).overlay(Rectangle().stroke(accent.opacity(0.25))).padding(.horizontal, 12)
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(ordered(usage).filter { matches($0) }) { process in
-                        Button { selection = process.id } label: {
-                            HStack(alignment: .top, spacing: 7) {
-                                Text(process.id == instance ? "◆" : "└").foregroundStyle(accent)
-                                    .padding(.leading, CGFloat(min(5, depth(process, usage))) * 7)
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(process.name).font(.system(size: 11, weight: .medium, design: .monospaced)).lineLimit(1)
-                                    HStack {
-                                        Text("#" + String(process.id.pid))
-                                        Spacer()
-                                        Text(process.cpu.map { String(format: "%.1f%%", $0) } ?? "—")
-                                    }.font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
-                                }
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                                .background(selected?.id == process.id ? accent.opacity(0.12) : Color.clear)
-                                .overlay(alignment: .leading) { if selected?.id == process.id { Rectangle().fill(accent).frame(width: 2) } }
-                        }.buttonStyle(.plain)
-                    }
-                    if !query.isEmpty && !usage.processes.contains(where: { matches($0) }) {
-                        Text("NO MATCH / 无匹配节点").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).padding(18)
-                    }
-                }.padding(.horizontal, 6)
-            }
-        }.background(Color.black.opacity(0.15))
-    }
     private func terminalSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("// " + title).font(.system(size: 10, weight: .bold, design: .monospaced)).tracking(1).foregroundStyle(accent)
+                Text(title).font(.system(size: 10, weight: .bold, design: .monospaced)).tracking(1).foregroundStyle(accent)
                 Spacer()
                 Text("RO").font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
             }.padding(12).background(accent.opacity(0.06))
             VStack(spacing: 0, content: content).padding(.horizontal, 12).padding(.vertical, 4)
-        }.background(AgentsStyle.card).overlay(Rectangle().stroke(accent.opacity(0.2), lineWidth: 1))
+        }.background(AgentsStyle.card.opacity(0.7), in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(accent.opacity(0.14), lineWidth: 1))
     }
     private func processDetails(_ p: AgentProcessUsage) -> some View {
         VStack(spacing: 14) {
@@ -455,34 +419,10 @@ struct AgentDetailsView: View {
     }
     private func row(_ title: String, _ value: String) -> some View {
         HStack(alignment: .top, spacing: 14) {
-            Text(title).foregroundStyle(.secondary).frame(width: 155, alignment: .leading)
+            Text(title).foregroundStyle(.secondary).frame(width: 106, alignment: .leading)
             Text(value).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
         }.font(.system(size: 10, design: .monospaced)).padding(.vertical, 9).textSelection(.enabled)
             .overlay(alignment: .bottom) { Rectangle().fill(accent.opacity(0.08)).frame(height: 1) }
-    }
-    private func matches(_ p: AgentProcessUsage) -> Bool {
-        query.isEmpty || "\(p.name) \(p.id.pid) \(p.detail?.executable ?? "") \(p.detail?.entrypoint ?? "")".localizedCaseInsensitiveContains(query)
-    }
-    private func depth(_ p: AgentProcessUsage, _ usage: AgentUsage) -> Int {
-        let byPID = Dictionary(uniqueKeysWithValues: usage.processes.map { ($0.id.pid, $0) })
-        var parent = p.detail?.parent ?? 0, visited: Set<Int32> = [p.id.pid], result = 0
-        while let ancestor = byPID[parent], visited.insert(parent).inserted {
-            result += 1; parent = ancestor.detail?.parent ?? 0
-        }
-        return result
-    }
-    private func ordered(_ usage: AgentUsage) -> [AgentProcessUsage] {
-        let byPID = Dictionary(uniqueKeysWithValues: usage.processes.map { ($0.id.pid, $0) })
-        let children = Dictionary(grouping: usage.processes, by: { $0.detail?.parent ?? 0 })
-        var result: [AgentProcessUsage] = [], visited: Set<AgentProcessID> = []
-        func append(_ p: AgentProcessUsage) {
-            guard visited.insert(p.id).inserted else { return }
-            result.append(p)
-            for child in (children[p.id.pid] ?? []).sorted(by: { $0.id.pid < $1.id.pid }) { append(child) }
-        }
-        if let root = byPID[instance.pid] { append(root) }
-        for p in usage.processes.sorted(by: { $0.id.pid < $1.id.pid }) { append(p) }
-        return result
     }
     private func started(_ value: UInt64) -> String { Date(timeIntervalSince1970: Double(value) / 1e6).formatted(date: .numeric, time: .standard) }
     private func duration(_ value: Double) -> String { String(format: "%dh %02dm %02ds", Int(value) / 3600, Int(value) / 60 % 60, Int(value) % 60) }
@@ -500,4 +440,211 @@ struct AgentDetailsView: View {
         default: return "未知 (\(value))"
         }
     }
+}
+
+/// Geometry is stable under CPU sorting; rings encode process ancestry depth.
+enum AgentNeuralLayout {
+    static func positions(_ processes: [AgentProcessUsage], root: AgentProcessID, size: CGSize) -> [AgentProcessID: CGPoint] {
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let byPID = Dictionary(uniqueKeysWithValues: processes.map { ($0.id.pid, $0) })
+        func depth(_ p: AgentProcessUsage) -> Int {
+            var parent = p.detail?.parent ?? root.pid, visited: Set<Int32> = [p.id.pid], value = 1
+            while parent != root.pid, let ancestor = byPID[parent], visited.insert(parent).inserted {
+                value += 1; parent = ancestor.detail?.parent ?? root.pid
+            }
+            return value
+        }
+        let children = processes.filter { $0.id != root }.sorted { $0.id.pid < $1.id.pid }
+        // Split crowded depth groups into rings of at most 16 nodes.
+        let groups = Dictionary(grouping: children, by: { min(3, depth($0)) })
+        var rings: [[AgentProcessUsage]] = []
+        for key in groups.keys.sorted() {
+            let members = groups[key] ?? []
+            for offset in stride(from: 0, to: members.count, by: 16) {
+                rings.append(Array(members[offset..<min(offset + 16, members.count)]))
+            }
+        }
+        var result: [AgentProcessID: CGPoint] = [root: center]
+        let limit = max(60, min(size.width, size.height) / 2 - 42)
+        for (index, ring) in rings.enumerated() {
+            let radius = rings.count == 1 ? limit * 0.77 : 95 + max(0, limit - 95) * CGFloat(index + 1) / CGFloat(rings.count)
+            for (offset, p) in ring.enumerated() {
+                let angle = Double(offset) * .pi * 2 / Double(ring.count) - .pi / 2 + Double(index) * 0.27
+                result[p.id] = CGPoint(x: center.x + CGFloat(Foundation.cos(angle)) * radius, y: center.y + CGFloat(Foundation.sin(angle)) * radius)
+            }
+        }
+        return result
+    }
+}
+
+private struct AgentNeuralMap: View {
+    let usage: AgentUsage
+    let root: AgentProcessID
+    let selected: AgentProcessID
+    let accent: Color
+    let live: Bool
+    let select: (AgentProcessID) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var query = ""
+    @State private var page = 0
+    @State private var hovered: AgentProcessID?
+    @State private var listMode = false
+    private var children: [AgentProcessUsage] { usage.processes.filter { $0.id != root }.sorted { $0.id.pid < $1.id.pid } }
+    private var pages: Int { max(1, (children.count + 47) / 48) }
+    private var effectivePage: Int { min(page, pages - 1) }
+    private var visible: [AgentProcessUsage] {
+        let begin = effectivePage * 48
+        return usage.processes.filter { $0.id == root } + Array(children.dropFirst(begin).prefix(48))
+    }
+    private func matches(_ p: AgentProcessUsage) -> Bool {
+        query.isEmpty || "\(p.name) \(p.id.pid) \(p.detail?.executable ?? "") \(p.detail?.entrypoint ?? "")".localizedCaseInsensitiveContains(query)
+    }
+    private func radius(_ p: AgentProcessUsage) -> CGFloat {
+        p.id == root ? 47 : CGFloat(7 + min(11, sqrt(Double(p.memory ?? 0) / 1e9) * 9))
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("PROCESS CONSTELLATION").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.5).foregroundStyle(accent)
+                Spacer()
+                Button(listMode ? "节点网络" : "进程列表") { listMode.toggle() }.buttonStyle(.plain).foregroundStyle(.secondary)
+            }.padding(.horizontal, 22).padding(.top, 18)
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(accent)
+                TextField("查找进程、PID 或路径", text: $query).textFieldStyle(.plain)
+                if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain) }
+            }.font(.system(size: 11)).padding(11).background(.white.opacity(0.035), in: Capsule()).padding(.horizontal, 22).padding(.top, 14)
+            if listMode || !query.isEmpty {
+                processList
+            } else {
+                graph
+            }
+            HStack(spacing: 12) {
+                HStack(spacing: 5) { Circle().stroke(accent).frame(width: 9, height: 9); Text("大小 · RSS") }
+                HStack(spacing: 5) { Circle().stroke(AgentsStyle.green, lineWidth: 2).frame(width: 9, height: 9); Text("光环 · CPU") }
+                Text("连线 · 父子进程").foregroundStyle(.secondary)
+                Spacer()
+                if pages > 1 {
+                    Button { page = max(0, effectivePage - 1) } label: { Image(systemName: "chevron.left") }.disabled(effectivePage == 0)
+                    Text("\(effectivePage + 1)/\(pages)")
+                    Button { page = min(pages - 1, effectivePage + 1) } label: { Image(systemName: "chevron.right") }.disabled(effectivePage == pages-1)
+                }
+            }.font(.system(size: 9)).foregroundStyle(accent.opacity(0.9)).buttonStyle(.plain).padding(.horizontal, 22).padding(.bottom, 12)
+            Text("粒子随已采集的 CPU 活动变化 · 不代表思考、任务或网络传输")
+                .font(.system(size: 9)).foregroundStyle(.secondary).padding(.bottom, 16)
+        }.background(Color.black.opacity(0.12))
+    }
+    private var graph: some View {
+                GeometryReader { geometry in
+                    let positions = AgentNeuralLayout.positions(visible, root: root, size: geometry.size)
+                    let labeled = Set(visible.filter { $0.id != root }.sorted { ($0.memory ?? 0) > ($1.memory ?? 0) }.prefix(5).map { $0.id })
+                    ZStack {
+                        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || !live)) { timeline in
+                            Canvas { context, size in
+                                draw(&context, size: size, positions: positions, time: timeline.date.timeIntervalSinceReferenceDate)
+                            }
+                        }.allowsHitTesting(false).accessibilityHidden(true)
+                        ForEach(visible) { p in
+                            if let point = positions[p.id] {
+                                node(p, at: point, labeled: labeled.contains(p.id))
+                            }
+                        }
+                        if visible.count <= 1 {
+                            Text("当前只有根进程 · 暂无子进程").font(.system(size: 11)).foregroundStyle(.secondary)
+                                .position(x: geometry.size.width/2, y: geometry.size.height/2 + 110)
+                        }
+                    }
+                }
+    }
+    private func draw(_ context: inout GraphicsContext, size: CGSize, positions: [AgentProcessID: CGPoint], time: TimeInterval) {
+                                let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                                context.fill(Path(CGRect(origin: .zero, size: size)), with: .radialGradient(Gradient(colors: [accent.opacity(0.10), .clear]), center: center, startRadius: 10, endRadius: min(size.width, size.height) / 2))
+                                // Fixed star field is decorative, not inferred agent activity.
+                                for index in 0..<90 {
+                                    let x = CGFloat((index * 173 + 19) % 997) / 997 * size.width
+                                    let y = CGFloat((index * 331 + 71) % 991) / 991 * size.height
+                                    context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1.5, height: 1.5)), with: .color(accent.opacity(index % 4 == 0 ? 0.35 : 0.10)))
+                                }
+                                for scale in [0.31, 0.61, 0.89] {
+                                    let r = min(size.width, size.height) * scale / 2
+                                    context.stroke(Path(ellipseIn: CGRect(x: center.x-r, y: center.y-r, width: r*2, height: r*2)), with: .color(accent.opacity(0.09)), style: StrokeStyle(lineWidth: 1, dash: [2, 7]))
+                                }
+                                for p in visible where p.id != root {
+                                    guard let point = positions[p.id], let parent = p.detail?.parent,
+                                          let parentProcess = visible.first(where: { $0.id.pid == parent }), let parentPoint = positions[parentProcess.id] else { continue }
+                                    var path = Path(); path.move(to: parentPoint); path.addLine(to: point)
+                                    let highlighted = p.id == selected || p.id == hovered || parentProcess.id == selected
+                                    context.stroke(path, with: .color(accent.opacity(highlighted ? 0.45 : 0.15)), lineWidth: highlighted ? 1 : 0.6)
+                                }
+                                let now = time
+                                for p in visible {
+                                    guard let point = positions[p.id] else { continue }
+                                    let r = radius(p), load = min(1, max(0, p.cpu ?? 0) / 100)
+                                    let active = live && p.cpu != nil && (p.cpu ?? 0) > 0.1
+                                    let glow = r + 14 + CGFloat(load * 12)
+                                    context.fill(Path(ellipseIn: CGRect(x: point.x-glow, y: point.y-glow, width: glow*2, height: glow*2)), with: .radialGradient(Gradient(colors: [accent.opacity(p.id == selected ? 0.3 : 0.12 + load * 0.12), .clear]), center: point, startRadius: r * 0.5, endRadius: glow))
+                                    context.fill(Path(ellipseIn: CGRect(x: point.x-r, y: point.y-r, width: r*2, height: r*2)), with: .color(AgentsStyle.background))
+                                    context.stroke(Path(ellipseIn: CGRect(x: point.x-r, y: point.y-r, width: r*2, height: r*2)), with: .color(accent.opacity(p.id == selected ? 1 : 0.5)), lineWidth: p.id == selected ? 2 : 1)
+                                    var arc = Path(); arc.addArc(center: point, radius: r+5, startAngle: .degrees(-90), endAngle: .degrees(-90 + load*360), clockwise: false)
+                                    context.stroke(arc, with: .color(AgentsStyle.green), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                                    if active {
+                                        let angle = (reduceMotion ? 0 : now * (0.3 + load)) + Double(p.id.pid % 23)
+                                        let orbit = r + 7
+                                        let dot = CGPoint(x: point.x + CGFloat(Foundation.cos(angle))*orbit, y: point.y + CGFloat(Foundation.sin(angle))*orbit)
+                                        context.fill(Path(ellipseIn: CGRect(x: dot.x-2, y: dot.y-2, width: 4, height: 4)), with: .color(AgentsStyle.green))
+                                    }
+                                    if p.id != root {
+                                        let core = max(2, r * 0.24)
+                                        context.fill(Path(ellipseIn: CGRect(x: point.x-core, y: point.y-core, width: core*2, height: core*2)), with: .color(accent.opacity(0.8)))
+                                    }
+                                }
+    }
+
+    private var processList: some View {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(usage.processes.filter { matches($0) }.sorted { $0.id.pid < $1.id.pid }) { process in
+                            Button { select(process.id); page = children.firstIndex(where: { $0.id == process.id }).map { $0 / 48 } ?? 0; query = ""; listMode = false } label: {
+                                HStack {
+                                    Circle().fill(accent).frame(width: 5, height: 5)
+                                    Text(process.name).lineLimit(1)
+                                    Spacer()
+                                    Text("#" + String(process.id.pid)).foregroundStyle(.secondary)
+                                    Text(process.cpu.map { String(format: "%.1f%%", $0) } ?? "—").frame(width: 60, alignment: .trailing)
+                                }.font(.system(size: 11, design: .monospaced)).padding(12).background(selected == process.id ? accent.opacity(0.12) : Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+                            }.buttonStyle(.plain)
+                        }
+                        if !usage.processes.contains(where: { matches($0) }) { Text("无匹配进程").foregroundStyle(.secondary).padding(30) }
+                    }.padding(20)
+                }
+    }
+    @ViewBuilder private func node(_ p: AgentProcessUsage, at point: CGPoint, labeled: Bool) -> some View {
+        processButton(p).position(point)
+            .onHover { inside in hovered = inside ? p.id : nil }
+            .help(p.name + " #" + String(p.id.pid))
+            .accessibilityLabel(p.name + "，PID " + String(p.id.pid))
+                                if p.id != root && (labeled || p.id == selected || p.id == hovered) {
+                                    VStack(spacing: 3) {
+                                        Text(p.name).font(.system(size: 9, weight: .medium)).lineLimit(1)
+                                        Text("#" + String(p.id.pid)).font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+                                    }.frame(width: 100).padding(4).background(AgentsStyle.background.opacity(0.9), in: RoundedRectangle(cornerRadius: 5))
+                                        .position(x: point.x, y: point.y + radius(p) + 24).allowsHitTesting(false)
+                                }
+    }
+    private func processButton(_ p: AgentProcessUsage) -> some View {
+        Button { select(p.id) } label: {
+            Group {
+                if p.id == root {
+                    VStack(spacing: 4) {
+                        Image(systemName: "cpu").font(.system(size: 21)).foregroundStyle(accent)
+                        Text(usage.kind.rawValue).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                        Text("ROOT").font(.system(size: 7, design: .monospaced)).tracking(2).foregroundStyle(.secondary)
+                    }.frame(width: 92, height: 92)
+                } else {
+                    Color.clear.frame(width: max(30, radius(p)*2 + 8), height: max(30, radius(p)*2 + 8)).contentShape(Circle())
+                }
+            }
+        }.buttonStyle(.plain)
+    }
+
 }

@@ -195,9 +195,31 @@ final class AgentTests {
     }
 }
 
+func testNeuralGeometry() {
+    let root = AgentProcessID(pid: 100, started: 1)
+    var nodes: [AgentProcessUsage] = []
+    for index in 0..<49 {
+        let id = AgentProcessID(pid: Int32(100 + index), started: 1)
+        let memory = UInt64(index) * 1024
+        let process = AgentProcessUsage(id: id, name: "node", cpu: Double(index), memory: memory)
+        nodes.append(process)
+    }
+    let size = CGSize(width: 600, height: 420)
+    let positions = AgentNeuralLayout.positions(nodes, root: root, size: size)
+    XCTAssertEqual(positions.count, nodes.count)
+    XCTAssertEqual(positions[root], CGPoint(x: 300, y: 210))
+    XCTAssertEqual(positions, AgentNeuralLayout.positions(Array(nodes.reversed()), root: root, size: size))
+    for point in positions.values {
+        XCTAssertTrue(point.x.isFinite && point.y.isFinite)
+        XCTAssertTrue(point.x >= 0 && point.x <= size.width && point.y >= 0 && point.y <= size.height)
+    }
+    XCTAssertEqual(Set(positions.values.map { "\($0.x),\($0.y)" }).count, nodes.count)
+}
+
 let tests = MetricsTests()
 let agentTests = AgentTests()
 let cases: [(String, () -> Void)] = [
+    ("Neural geometry / stable order and bounds", testNeuralGeometry),
     ("Agent recognition / false positives", agentTests.testRecognition),
     ("Nested agent aggregation", agentTests.testNestedSameAgentCountedOnce),
     ("Different agent ownership", agentTests.testDifferentAgentsDoNotDoubleCountChildren),

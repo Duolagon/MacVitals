@@ -119,7 +119,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     }
     private func showDetails(_ id: AgentProcessID) {
         if detailWindows[id] == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.title = "Agent 详情 · PID \(id.pid)"
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id))
@@ -131,7 +131,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     /// Export only this module's own view with live samples, for layout review.
     private func exportDetails(_ id: AgentProcessID, to destination: URL) {
         let host = NSHostingView(rootView: AgentDetailsView(model: model, instance: id))
-        let size = NSSize(width: 1040, height: 820)
+        let size = NSSize(width: 1140, height: 820)
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: .borderless, backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .darkAqua); window.contentView = host
         host.frame = NSRect(origin: .zero, size: size); host.layoutSubtreeIfNeeded()
