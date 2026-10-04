@@ -12,11 +12,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var timer: Timer?
     private let monitor = Monitor()
     private let dashboard = DashboardModel()
+    private let widgetPublisher = WidgetPublisher()
     private let popover = NSPopover()
-    private var outsideClickMonitor: Any?
     private var localClickMonitor: Any?
-    private var resignObserver: NSObjectProtocol?
     private var previewWindow: NSWindow?
+    private var widgetDashboardWindow: NSWindow?
+    private var widgetOnly: Bool { UserDefaults.standard.bool(forKey: "widgetOnly") }
     private var detailsWindow: NSWindow?
     private let detailsQueue = DispatchQueue(label: "local.macvitals.details", qos: .utility)
     private var detailsMonitor: DetailsMonitor?
@@ -24,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var detailsSampling = DetailSamplingGate()
     private var detailsNeedsReset = false
     private let menu = NSMenu()
-    private var interval: Double { let v = UserDefaults.standard.double(forKey: "interval"); return [1.0, 2, 5, 10].contains(v) ? v : 2 }
+    private let interval: Double = 2
     func applicationDidFinishLaunching(_ notification: Notification) {
         let statusName = "MacVitals"
         item = NSStatusBar.system.statusItem(withLength: StatusBarText.width)
@@ -33,17 +34,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         item.button?.toolTip = "MacVitals · 点击查看系统状态"
         item.button?.target = self
         item.button?.action = #selector(showDashboard)
-        popover.delegate = self
         popover.behavior = .transient
+        popover.delegate = self
         popover.contentSize = NSSize(width: 440, height: MonitorStyle.panelHeight)
-        popover.contentViewController = NSHostingController(rootView: DashboardView(model: dashboard, settings: { [weak self] in self?.showSettings() }, showDetails: { [weak self] in self?.showDetails() }))
-        let refresh = NSMenuItem(title: "刷新间隔", action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
-        for value in [1, 2, 5, 10] {
-            let row = NSMenuItem(title: "\(value) 秒", action: #selector(changeInterval(_:)), keyEquivalent: "")
-            row.tag = value; row.target = self; row.state = Double(value) == interval ? .on : .off; submenu.addItem(row)
-        }
-        refresh.submenu = submenu; menu.addItem(refresh)
+        menu.addItem(NSMenuItem(title: "CPU / 内存 / 网速：每 2 秒采集", action: nil, keyEquivalent: ""))
+        let widgetsOnly = NSMenuItem(title: "仅显示小组件（隐藏顶栏）", action: #selector(toggleWidgetOnly(_:)), keyEquivalent: "")
+        widgetsOnly.target = self; widgetsOnly.state = widgetOnly ? .on : .off; menu.addItem(widgetsOnly)
         let login = NSMenuItem(title: "登录时启动", action: #selector(toggleLogin(_:)), keyEquivalent: "")
         login.target = self; login.state = SMAppService.mainApp.status == .enabled ? .on : .off; menu.addItem(login)
         let activity = NSMenuItem(title: "打开活动监视器", action: #selector(openActivity), keyEquivalent: "")
@@ -52,6 +48,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let quit = NSMenuItem(title: "退出 MacVitals", action: #selector(quit), keyEquivalent: "q"); quit.target = self; menu.addItem(quit)
         update(); startTimer()
         agentsController = AgentsController()
+        item.isVisible = !widgetOnly
+        agentsController?.setMenuBarVisible(!widgetOnly)
+        if CommandLine.arguments.contains("--widget-mode-diagnose") {
+            let original = widgetOnly
+            let started = Date()
+            setWidgetOnly(true)
+            print("widget-only: networkVisible=\(item.isVisible) agentVisible=\(agentsController?.menuBarIsVisible ?? true) dashboardVisible=\(widgetDashboardWindow?.isVisible ?? false)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                guard let self else { return }
+                let advanced = WidgetSnapshot.read().map { $0.sampledAt > started.addingTimeInterval(1) } ?? false
+                self.setWidgetOnly(original)
+                print("widget-only sampling advanced=\(advanced); restored=\(self.widgetOnly == original) networkVisible=\(self.item.isVisible)")
+                NSApp.terminate(nil)
+            }
+        }
         if CommandLine.arguments.contains("--preview-agents") { agentsController?.showPreview() }
         if CommandLine.arguments.contains("--status-layout-diagnose") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
@@ -83,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if CommandLine.arguments.contains("--preview-dashboard") {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: MonitorStyle.panelHeight), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "MacVitals · 实时面板预览"
+            window.delegate = self
             window.contentViewController = NSHostingController(rootView: DashboardView(model: dashboard, settings: { [weak self] in self?.showSettings() }, showDetails: { [weak self] in self?.showDetails() }))
             window.isReleasedWhenClosed = false; window.center()
             previewWindow = window
@@ -112,18 +124,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     private func startTimer() {
         timer?.invalidate()
-        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.update() }
+        let samplingInterval = CommandLine.arguments.contains("--widget-refresh-probe") ? 1 : interval
+        let t = Timer(timeInterval: samplingInterval, repeats: true) { [weak self] _ in self?.update() }
         RunLoop.main.add(t, forMode: .common); timer = t
     }
     private func update(forceSlow: Bool = false) {
         let s = monitor.sample(forceSlow: forceSlow)
         item.button?.image = nil
-        item.button?.title = StatusBarText.title(cpu: s.cpu, memory: s.memoryPercent, download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond)
-        let cpuLabel = s.cpu.map { String(format: "%.0f%%", $0) } ?? "采样中"
-        let memoryLabel = s.memoryPercent.map { "\(Int($0))%" } ?? "不可用"
-        item.button?.setAccessibilityLabel("CPU \(cpuLabel)，内存 \(memoryLabel)，下载 \(MetricsFormat.rate(s.downloadBytesPerSecond))，上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))")
-        item.button?.toolTip = "MacVitals · \(s.networkInterface) · 下载 \(MetricsFormat.rate(s.downloadBytesPerSecond)) · 上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))"
+        let title = StatusBarText.title(download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond)
+        item.button?.title = title
+        item.button?.setAccessibilityLabel("下载 \(MetricsFormat.rate(s.downloadBytesPerSecond))，上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))")
+        item.button?.toolTip = "MacVitals · \(s.networkInterface)\n下载 \(MetricsFormat.rate(s.downloadBytesPerSecond)) · 上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))"
         dashboard.record(s)
+        widgetPublisher.record(s)
     }
     private func startDetailsSampling() {
         guard detailsWindow?.isVisible == true, detailsWindow?.isMiniaturized == false,
@@ -160,13 +173,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
     }
     func windowWillClose(_ notification: Notification) {
-        if let window = notification.object as? NSWindow, window === detailsWindow { stopDetailsSampling() }
+        guard let window = notification.object as? NSWindow else { return }
+        if window === detailsWindow { stopDetailsSampling(); detailsWindow = nil }
+        else if window === widgetDashboardWindow { widgetDashboardWindow = nil }
+        else if window === previewWindow { previewWindow = nil }
+        else { return }
+        window.contentViewController = nil; window.delegate = nil
     }
     func windowDidMiniaturize(_ notification: Notification) {
         if let window = notification.object as? NSWindow, window === detailsWindow { stopDetailsSampling() }
     }
     func windowDidDeminiaturize(_ notification: Notification) {
-        if let window = notification.object as? NSWindow, window === detailsWindow { startDetailsSampling() }
+        if let window = notification.object as? NSWindow, window === detailsWindow { update(forceSlow: true); startDetailsSampling() }
     }
     private func showDetails() {
         popover.performClose(nil)
@@ -184,9 +202,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         startDetailsSampling()
     }
     @objc private func showDashboard() {
+        if widgetOnly { showWidgetDashboard(); return }
         guard let button = item.button else { return }
+        toggleDashboard(relativeTo: button)
+    }
+    private func showWidgetDashboard() {
+        if widgetDashboardWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: MonitorStyle.panelHeight), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "MacVitals · 小组件设置"
+            window.delegate = self
+            window.isReleasedWhenClosed = false
+            window.contentViewController = NSHostingController(rootView: DashboardView(model: dashboard, settings: { [weak self] in self?.showSettings() }, showDetails: { [weak self] in self?.showDetails() }))
+            window.center(); widgetDashboardWindow = window
+        }
+        update(forceSlow: true)
+        NSApp.activate(ignoringOtherApps: true)
+        if widgetDashboardWindow?.isMiniaturized == true { widgetDashboardWindow?.deminiaturize(nil) }
+        widgetDashboardWindow?.makeKeyAndOrderFront(nil)
+    }
+    private func toggleDashboard(relativeTo button: NSButton) {
         if popover.isShown { popover.performClose(nil) }
         else {
+            popover.contentViewController = NSHostingController(rootView: DashboardView(model: dashboard, settings: { [weak self] in self?.showSettings() }, showDetails: { [weak self] in self?.showDetails() }))
             update(forceSlow: true)
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -196,37 +233,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     private func startDismissMonitoring() {
         stopDismissMonitoring()
-        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
-            self?.popover.performClose(nil)
-        }
-        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self, self.popover.isShown else { return event }
-            if event.type == .keyDown {
-                if event.keyCode == 53 { self.popover.performClose(nil); return nil }
-            } else if event.window !== self.popover.contentViewController?.view.window && event.window !== self.item.button?.window {
+            if event.keyCode == 53, event.window === self.popover.contentViewController?.view.window {
                 self.popover.performClose(nil)
+                return nil
             }
             return event
         }
-        resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main) { [weak self] _ in
-            self?.popover.performClose(nil)
-        }
     }
+    func popoverDidClose(_ notification: Notification) { stopDismissMonitoring(); popover.contentViewController = nil }
     private func stopDismissMonitoring() {
-        if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
         if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
-        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
-        outsideClickMonitor = nil; localClickMonitor = nil; resignObserver = nil
+        localClickMonitor = nil
     }
-    func popoverDidClose(_ notification: Notification) { stopDismissMonitoring() }
     private func showSettings() {
-        guard let button = item.button else { return }
         popover.performClose(nil)
+        if widgetOnly, let view = widgetDashboardWindow?.contentView {
+            menu.popUp(positioning: nil, at: NSPoint(x: view.bounds.maxX - 20, y: view.bounds.maxY - 20), in: view)
+            return
+        }
+        guard let button = item.button else { return }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
     }
-    @objc private func changeInterval(_ sender: NSMenuItem) {
-        UserDefaults.standard.set(Double(sender.tag), forKey: "interval")
-        sender.menu?.items.forEach { $0.state = $0 === sender ? .on : .off }; startTimer()
+    @objc private func toggleWidgetOnly(_ sender: NSMenuItem) {
+        let enabled = !widgetOnly
+        setWidgetOnly(enabled)
+        sender.state = enabled ? .on : .off
+    }
+    private func setWidgetOnly(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "widgetOnly")
+        popover.performClose(nil)
+        item.isVisible = !enabled
+        agentsController?.setMenuBarVisible(!enabled)
+        if enabled { showWidgetDashboard() } else { widgetDashboardWindow?.close() }
     }
     @objc private func toggleLogin(_ sender: NSMenuItem) {
         do {
@@ -237,6 +277,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         } catch {
             let alert = NSAlert(); alert.messageText = "无法设置登录启动"; alert.informativeText = error.localizedDescription; alert.runModal()
         }
+    }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if urls.contains(where: { $0.scheme == "macvitals" && $0.host == "dashboard" }) { showDashboard() }
     }
     @objc private func openActivity() { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
     @objc private func quit() { NSApplication.shared.terminate(nil) }

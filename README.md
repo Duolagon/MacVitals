@@ -10,6 +10,10 @@ A native macOS menu bar system monitor with CPU, memory, temperature, fan speed,
 
 <img src="MacVitals/assets/screenshots/dashboard.png" width="440" alt="MacVitals 完整遥测仪表面板">
 
+macOS 14 及以上支持原生桌面小组件，提供 CPU / 内存环形仪表和网速历史柱条。可隐藏顶栏，以小组件显示实时数据。
+
+<img src="MacVitals/assets/screenshots/widget-telemetry.png" width="400" alt="MacVitals 原生桌面组件">
+
 需要 macOS 13 或以上版本，以及 Apple Command Line Tools。
 
 ```sh

@@ -17,11 +17,11 @@ final class MetricsTests {
         XCTAssertEqual(MetricsFormat.rate(0), "0.0 B/s")
         XCTAssertEqual(MetricsFormat.rate(1000), "1.0 KB/s")
         XCTAssertEqual(MetricsFormat.rate(Double.nan), "不可用")
-        let baseline = StatusBarText.title(cpu: 0, memory: 0, download: 0, upload: 0).count
+        let baseline = StatusBarText.title(download: 0, upload: 0).count
         for value in [0.0, 9, 10, 99, 100, 999.94, 999.95, 1000, 1e6, 1e20] {
             XCTAssertEqual(MetricsFormat.compactRate(value).count, 8)
             XCTAssertEqual(MetricsFormat.menuRate(value).count, 4)
-            XCTAssertEqual(StatusBarText.title(cpu: value, memory: value, download: value, upload: value).count, baseline)
+            XCTAssertEqual(StatusBarText.title(download: value, upload: value).count, baseline)
         }
         XCTAssertEqual(MetricsFormat.compactRate(nil).count, 8)
         XCTAssertEqual(MetricsFormat.menuRate(nil).count, 4)
@@ -493,9 +493,50 @@ func testNativeAgentDiscoveryAndIdentityGuard() {
     XCTAssertTrue(monitor.metadataReadCount < monitor.discoveryCount)
 }
 
+func testWidgetSnapshotExchange() {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("MacVitals-widget-\(UUID().uuidString)")
+    let url = directory.appendingPathComponent("widget-snapshot.json")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    XCTAssertNil(WidgetSnapshot.read(from: url))
+    do {
+        let sample = WidgetSnapshot(sampledAt: Date(), cpu: 25, memory: nil, download: 1000, upload: nil, interface: "en0")
+        try sample.write(to: url)
+        XCTAssertEqual(WidgetSnapshot.read(from: url), sample)
+        var chart = sample
+        chart.history = (0..<32).map { (index: Int) -> WidgetHistoryPoint in
+            let timestamp = sample.sampledAt.addingTimeInterval(Double(index - 31))
+            let download: Double? = index == 7 ? nil : Double(index * 1000)
+            return WidgetHistoryPoint(sampledAt: timestamp, cpu: Double(index), memory: 50, download: download, upload: 50)
+        }
+        try chart.write(to: url)
+        XCTAssertEqual(WidgetSnapshot.read(from: url), chart)
+        XCTAssertTrue((try Data(contentsOf: url)).count < 16_384)
+        chart.history!.append(chart.history!.last!)
+        try chart.write(to: url)
+        XCTAssertNil(WidgetSnapshot.read(from: url))
+        chart.history = [WidgetHistoryPoint(sampledAt: sample.sampledAt.addingTimeInterval(1), cpu: 0, memory: 0, download: 0, upload: 0)]
+        try chart.write(to: url)
+        XCTAssertNil(WidgetSnapshot.read(from: url))
+        let stopped = WidgetSnapshot(sampledAt: Date().addingTimeInterval(-3600), cpu: nil, memory: nil, download: nil, upload: nil, interface: "")
+        try stopped.write(to: url)
+        XCTAssertEqual(WidgetSnapshot.read(from: url), stopped)
+        let future = WidgetSnapshot(sampledAt: Date().addingTimeInterval(600), cpu: 25, memory: 50, download: 1, upload: 1, interface: "en0")
+        try future.write(to: url)
+        XCTAssertNil(WidgetSnapshot.read(from: url))
+        let invalid = WidgetSnapshot(sampledAt: Date(), cpu: -1, memory: nil, download: nil, upload: nil, interface: "en0")
+        try invalid.write(to: url)
+        XCTAssertNil(WidgetSnapshot.read(from: url))
+        try Data("{broken".utf8).write(to: url)
+        XCTAssertNil(WidgetSnapshot.read(from: url))
+        try Data(repeating: 32, count: 16_385).write(to: url)
+        XCTAssertNil(WidgetSnapshot.read(from: url))
+    } catch { XCTFail("Widget snapshot exchange: \(error)") }
+}
+
 let tests = MetricsTests()
 let agentTests = AgentTests()
 let cases: [(String, () -> Void)] = [
+    ("Widget snapshot / missing, valid, old, future and corrupt data", testWidgetSnapshotExchange),
     ("Agent termination / instance scope and child-first order", testAgentTerminationScopeAndOrder),
     ("Agent termination / reuse, reparenting, ownership and failures", testAgentTerminationRejectsStaleAndUnownedTargets),
     ("Agent termination / native TERM and KILL on controlled children", testNativeAgentTerminationSignals),

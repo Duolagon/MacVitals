@@ -231,6 +231,11 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         guard let button = item.button, let window = button.window else { return "agent status window unavailable" }
         return "agent status frame: \(window.convertToScreen(button.convert(button.bounds, to: nil))) · title: \(button.title)"
     }
+    func setMenuBarVisible(_ visible: Bool) {
+        if !visible { popover.performClose(nil); stopDismissMonitoring() }
+        item.isVisible = visible
+    }
+    var menuBarIsVisible: Bool { item.isVisible }
     func stop() {
         running = false; timer?.invalidate(); timer = nil
         popover.performClose(nil); stopDismissMonitoring()
