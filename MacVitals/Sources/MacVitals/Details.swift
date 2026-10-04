@@ -94,7 +94,7 @@ final class DetailsMonitor {
     private func memory(_ snapshot: Snapshot) -> [DetailEntry] {
         var v = vm_statistics64(); var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
         let ok = withUnsafeMutablePointer(to: &v) { $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { host_statistics64(host.port, HOST_VM_INFO64, $0, &count) } }
-        var rows = [DetailEntry(label: "占用估算", value: snapshot.memory), DetailEntry(label: "交换空间", value: snapshot.swap)]
+        var rows = [DetailEntry(label: "占用估算", value: snapshot.memory), DetailEntry(label: "交换已使用", value: snapshot.swap), DetailEntry(label: "交换当前分配", value: snapshot.swapAllocated)]
         if ok == KERN_SUCCESS {
             let metrics: [(String, UInt64)] = [("活动页", UInt64(v.active_count)), ("非活动页", UInt64(v.inactive_count)), ("Wired", UInt64(v.wire_count)), ("压缩器物理占用", UInt64(v.compressor_page_count)), ("压缩前逻辑大小", v.total_uncompressed_pages_in_compressor), ("文件缓存页", UInt64(v.external_page_count)), ("空闲页", UInt64(v.free_count))]
             rows += metrics.map { DetailEntry(label: $0.0, value: bytes($0.1 * UInt64(vm_kernel_page_size))) }

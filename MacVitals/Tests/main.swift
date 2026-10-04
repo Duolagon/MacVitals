@@ -11,6 +11,26 @@ import CMetrics
 
 
 final class MetricsTests {
+    func testFormattingAndInterfaceSelection() {
+        XCTAssertEqual(MetricsFormat.bytes(0), "0 B")
+        XCTAssertEqual(MetricsFormat.rate(0), "0.0 B/s")
+        XCTAssertEqual(MetricsFormat.rate(1000), "1.0 KB/s")
+        XCTAssertEqual(MetricsFormat.rate(Double.nan), "不可用")
+        let baseline = StatusBarText.title(cpu: 0, memory: 0, download: 0, upload: 0).count
+        for value in [0.0, 9, 10, 99, 100, 999.94, 999.95, 1000, 1e6, 1e20] {
+            XCTAssertEqual(MetricsFormat.compactRate(value).count, 8)
+            XCTAssertEqual(StatusBarText.title(cpu: value, memory: value, download: value, upload: value).count, baseline)
+        }
+        XCTAssertEqual(MetricsFormat.compactRate(nil).count, 8)
+        let interfaces = [
+            NetworkInterfaceReading(name: "utun0", index: 1, address: "10.0.0.1", counters: .init(received: 0, sent: 0)),
+            NetworkInterfaceReading(name: "en0", index: 2, address: "192.168.1.2", counters: .init(received: 0, sent: 0)),
+            NetworkInterfaceReading(name: "en1", index: 3, address: "192.168.2.2", counters: .init(received: 0, sent: 0))
+        ]
+        XCTAssertEqual(NetworkSampler.select(interfaces, primary: "en1")?.name, "en1")
+        XCTAssertEqual(NetworkSampler.select(interfaces, primary: "utun0")?.name, "en0")
+        XCTAssertNil(NetworkSampler.select([], primary: nil))
+    }
     func testCounterResetAndInterfaceReplacement() {
         var tracker = CounterTracker()
         XCTAssertTrue(tracker.sample(["en0#1": .init(received: 100_000_000, sent: 20)], elapsed: nil).isEmpty)
@@ -85,6 +105,7 @@ final class MetricsTests {
 
 let tests = MetricsTests()
 let cases: [(String, () -> Void)] = [
+    ("Swap / rate formatting and primary interface", tests.testFormattingAndInterfaceSelection),
     ("Counter reset / interface replacement", tests.testCounterResetAndInterfaceReplacement),
     ("Disk hotplug", tests.testDiskHotplugDoesNotCountHistoricalTraffic),
     ("64-bit network counters", tests.testCountersBeyondFourGiBRemainAccurate),

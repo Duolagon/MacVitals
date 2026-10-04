@@ -12,6 +12,10 @@ struct Snapshot {
     var fanRPM: Double?
     var temperatureC: Double?
     var swap = "不可用"
+    var swapAllocated = "不可用"
+    var downloadBytesPerSecond: Double?
+    var uploadBytesPerSecond: Double?
+    var networkInterface = "采样中"
     var disk = "不可用"
     var battery = "无电池或不可用"
     var fans = "不可用（无风扇或系统未开放）"
@@ -20,6 +24,7 @@ struct Snapshot {
 }
 final class Monitor {
     private let host = HostPort()
+    private let network = NetworkSampler()
     private var previous: [UInt32]?
     func sample() -> Snapshot {
         var s = Snapshot()
@@ -54,7 +59,14 @@ final class Monitor {
             s.memory = "\(bytes(used)) / \(bytes(total))（\(Int(s.memoryPercent ?? 0))%）"
         }
         var swap = xsw_usage(); var swapSize = MemoryLayout<xsw_usage>.size
-        if sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0 { s.swap = bytes(swap.xsu_used) }
+        if sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0 {
+            s.swap = swap.xsu_used == 0 ? "0 B（未使用）" : MetricsFormat.bytes(swap.xsu_used)
+            s.swapAllocated = MetricsFormat.bytes(swap.xsu_total)
+        }
+        let networkReading = network.sample()
+        s.networkInterface = networkReading.interface
+        s.downloadBytesPerSecond = networkReading.download
+        s.uploadBytesPerSecond = networkReading.upload
         if let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]), let total = values.volumeTotalCapacity, let free = values.volumeAvailableCapacityForImportantUsage {
             s.disk = "可用 \(bytes(UInt64(max(0, free)))) / \(bytes(UInt64(total)))"
         }

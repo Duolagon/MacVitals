@@ -10,5 +10,5 @@ module CMetrics {
 }
 MODULE
 clang -c Sources/CMetrics/CMetrics.c -I Sources/CMetrics/include -o "$TEST_BUILD/CMetrics.o"
-swiftc -I "$TEST_BUILD/CMetrics" Sources/MacVitals/SystemMonitor.swift Sources/MacVitals/MetricsSupport.swift Sources/MacVitals/Dashboard.swift Sources/MacVitals/Details.swift Sources/MacVitals/PowerMetrics.swift Tests/main.swift "$TEST_BUILD/CMetrics.o" -framework AppKit -framework IOKit -o "$TEST_BUILD/checks"
+swiftc -I "$TEST_BUILD/CMetrics" Sources/MacVitals/NetworkSampler.swift Sources/MacVitals/MetricsFormat.swift Sources/MacVitals/StatusBarText.swift Sources/MacVitals/SystemMonitor.swift Sources/MacVitals/MetricsSupport.swift Sources/MacVitals/Dashboard.swift Sources/MacVitals/Details.swift Sources/MacVitals/PowerMetrics.swift Tests/main.swift "$TEST_BUILD/CMetrics.o" -framework AppKit -framework IOKit -framework SystemConfiguration -o "$TEST_BUILD/checks"
 "$TEST_BUILD/checks"
