@@ -14,6 +14,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     private var clickMonitor: Any?, localMonitor: Any?
     private var resignObserver: NSObjectProtocol?
     private var previewWindow: NSWindow?
+    private var detailWindows: [AgentProcessID: NSWindow] = [:]
     private var interval: Double {
         let value = UserDefaults.standard.double(forKey: "agents.interval")
         return [2.0, 5, 10].contains(value) ? value : 2
@@ -39,7 +40,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         AgentsView(model: model, interval: interval, setInterval: { [weak self] value in
             UserDefaults.standard.set(value, forKey: "agents.interval")
             self?.configureView(); self?.startTimer()
-        })
+        }, showDetails: { [weak self] id in self?.showDetails(id) })
     }
     private func startTimer() {
         timer?.invalidate()
@@ -104,6 +105,17 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         }
         NSApp.activate(ignoringOtherApps: true); previewWindow?.makeKeyAndOrderFront(nil)
     }
+    private func showDetails(_ id: AgentProcessID) {
+        if detailWindows[id] == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 720), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            window.title = "Agent 详情 · PID \(id.pid)"
+            window.isReleasedWhenClosed = false
+            window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id))
+            window.center(); detailWindows[id] = window
+        }
+        popover.performClose(nil)
+        NSApp.activate(ignoringOtherApps: true); detailWindows[id]?.makeKeyAndOrderFront(nil)
+    }
     func layoutDescription() -> String {
         guard let button = item.button, let window = button.window else { return "agent status window unavailable" }
         return "agent status frame: \(window.convertToScreen(button.convert(button.bounds, to: nil))) · title: \(button.title)"
@@ -111,6 +123,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     func stop() {
         running = false; timer?.invalidate(); timer = nil
         popover.performClose(nil); stopDismissMonitoring()
+        for window in detailWindows.values { window.close() }; detailWindows.removeAll()
         previewWindow?.close(); NSStatusBar.system.removeStatusItem(item)
     }
 }

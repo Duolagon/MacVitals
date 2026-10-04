@@ -42,6 +42,12 @@ int mv_agent_processes(MVAgentProcess *out, int capacity) {
         if (used >= capacity) { free(pids); return -2; }
         MVAgentProcess *p = &out[used++]; memset(p, 0, sizeof(*p));
         p->pid = pids[i]; p->parent = info.pbi_ppid;
+        p->uid = info.pbi_uid; p->status = info.pbi_status;
+        struct proc_taskinfo task = {0};
+        if (proc_pidinfo(p->pid, PROC_PIDTASKINFO, 0, &task, sizeof(task)) == sizeof(task)) {
+            p->task_readable = 1; p->threads = task.pti_threadnum; p->running_threads = task.pti_numrunning; p->priority = task.pti_priority;
+            p->virtual_bytes = task.pti_virtual_size; p->faults = (uint32_t)task.pti_faults; p->pageins = (uint32_t)task.pti_pageins; p->switches = (uint32_t)task.pti_csw;
+        }
         p->started = info.pbi_start_tvsec * 1000000ULL + info.pbi_start_tvusec;
         proc_name(p->pid, p->name, sizeof(p->name));
         proc_pidpath(p->pid, p->executable, sizeof(p->executable));
@@ -51,7 +57,9 @@ int mv_agent_processes(MVAgentProcess *out, int capacity) {
         if (proc_pid_rusage(p->pid, RUSAGE_INFO_V2, (rusage_info_t *)&usage) == 0) {
             p->readable = 1;
             p->cpu_ns = (uint64_t)(((__uint128_t)usage.ri_user_time + usage.ri_system_time) * timebase.numer / timebase.denom);
-            p->resident = usage.ri_resident_size;
+            p->resident = usage.ri_resident_size; p->footprint = usage.ri_phys_footprint;
+            p->user_ns = (uint64_t)((__uint128_t)usage.ri_user_time * timebase.numer / timebase.denom);
+            p->system_ns = (uint64_t)((__uint128_t)usage.ri_system_time * timebase.numer / timebase.denom);
             p->read_bytes = usage.ri_diskio_bytesread; p->written_bytes = usage.ri_diskio_byteswritten;
         }
     }

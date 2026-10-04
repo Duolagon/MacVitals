@@ -7,11 +7,20 @@ enum AgentKind: String, CaseIterable {
     case opencode = "OpenCode", cursor = "Cursor", aider = "Aider"
 }
 struct AgentProcessID: Hashable { let pid: Int32; let started: UInt64 }
+struct AgentProcessDetails {
+    let parent: Int32, uid: Int32, status: Int32
+    let executable: String, entrypoint: String
+    let threads: Int32?, runningThreads: Int32?, priority: Int32?
+    let virtualBytes: UInt64?, footprint: UInt64?, userNS: UInt64?, systemNS: UInt64?
+    let faults: UInt32?, pageins: UInt32?, switches: UInt32?
+    let readBytes: UInt64?, writtenBytes: UInt64?
+}
 struct AgentProcessReading {
     let pid: Int32, parent: Int32
     let started: UInt64
     let name: String, executable: String, entrypoint: String
     let cpuNanoseconds: UInt64?, memory: UInt64?, readBytes: UInt64?, writtenBytes: UInt64?
+    var detail: AgentProcessDetails? = nil
     var id: AgentProcessID { .init(pid: pid, started: started) }
 }
 struct AgentProcessUsage: Identifiable {
@@ -19,6 +28,9 @@ struct AgentProcessUsage: Identifiable {
     let name: String
     let cpu: Double?
     let memory: UInt64?
+    var detail: AgentProcessDetails? = nil
+    var readRate: Double? = nil
+    var writeRate: Double? = nil
 }
 struct AgentUsage: Identifiable {
     let id: AgentProcessID
@@ -93,7 +105,14 @@ final class AgentMonitor {
             return .init(pid: p.pid, parent: p.parent, started: p.started,
                          name: string(&p.name), executable: string(&p.executable), entrypoint: string(&p.entrypoint),
                          cpuNanoseconds: p.readable != 0 ? p.cpu_ns : nil, memory: p.readable != 0 ? p.resident : nil,
-                         readBytes: p.readable != 0 ? p.read_bytes : nil, writtenBytes: p.readable != 0 ? p.written_bytes : nil)
+                         readBytes: p.readable != 0 ? p.read_bytes : nil, writtenBytes: p.readable != 0 ? p.written_bytes : nil,
+                         detail: .init(parent: p.parent, uid: p.uid, status: p.status,
+                            executable: string(&p.executable), entrypoint: string(&p.entrypoint),
+                            threads: p.task_readable != 0 ? p.threads : nil, runningThreads: p.task_readable != 0 ? p.running_threads : nil,
+                            priority: p.task_readable != 0 ? p.priority : nil, virtualBytes: p.task_readable != 0 ? p.virtual_bytes : nil,
+                            footprint: p.readable != 0 ? p.footprint : nil, userNS: p.readable != 0 ? p.user_ns : nil, systemNS: p.readable != 0 ? p.system_ns : nil,
+                            faults: p.task_readable != 0 ? p.faults : nil, pageins: p.task_readable != 0 ? p.pageins : nil, switches: p.task_readable != 0 ? p.switches : nil,
+                            readBytes: p.readable != 0 ? p.read_bytes : nil, writtenBytes: p.readable != 0 ? p.written_bytes : nil))
         }
         return aggregate(readings, desktops: desktops, uptime: ProcessInfo.processInfo.systemUptime)
     }
@@ -142,7 +161,7 @@ final class AgentMonitor {
             let cpuValues = members.compactMap { cpu[$0.id] }, memoryValues = members.compactMap { $0.memory }
             let ioValues = members.compactMap { rates[key($0.id)] }
             return AgentUsage(id: process.id, kind: kind,
-                processes: members.map { .init(id: $0.id, name: $0.name, cpu: cpu[$0.id], memory: $0.memory) }.sorted { ($0.cpu ?? -1) > ($1.cpu ?? -1) },
+                processes: members.map { .init(id: $0.id, name: $0.name, cpu: cpu[$0.id], memory: $0.memory, detail: $0.detail, readRate: rates[key($0.id)]?.received, writeRate: rates[key($0.id)]?.sent) }.sorted { ($0.cpu ?? -1) > ($1.cpu ?? -1) },
                 cpu: cpuValues.isEmpty ? nil : cpuValues.reduce(0, +), memory: memoryValues.isEmpty ? nil : memoryValues.reduce(0, +),
                 readRate: ioValues.isEmpty ? nil : ioValues.reduce(0) { $0 + $1.received }, writeRate: ioValues.isEmpty ? nil : ioValues.reduce(0) { $0 + $1.sent },
                 partial: cpuValues.count < members.count || memoryValues.count < members.count)

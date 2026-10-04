@@ -186,6 +186,12 @@ final class AgentTests {
         let after = own(); XCTAssertEqual(after.started, before.started)
         XCTAssertEqual(Double(after.cpu_ns - before.cpu_ns) / 1e9, end - start, accuracy: 0.03)
         XCTAssertTrue(after.resident > 0)
+        XCTAssertEqual(after.uid, Int32(getuid()))
+        XCTAssertEqual(after.task_readable, 1)
+        XCTAssertTrue(after.threads > 0)
+        XCTAssertTrue(after.virtual_bytes >= after.resident)
+        XCTAssertTrue(after.footprint > 0)
+        XCTAssertTrue(abs(Double(after.user_ns + after.system_ns) - Double(after.cpu_ns)) <= 2)
     }
 }
 

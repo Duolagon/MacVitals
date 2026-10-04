@@ -25,6 +25,7 @@ struct AgentsView: View {
     @ObservedObject var model: AgentsModel
     var interval: Double
     let setInterval: (Double) -> Void
+    var showDetails: (AgentProcessID) -> Void = { _ in }
     private var totalMemory: UInt64 { ProcessInfo.processInfo.physicalMemory }
     private var cores: Double { Double(max(1, ProcessInfo.processInfo.activeProcessorCount)) }
     var body: some View {
@@ -116,6 +117,7 @@ struct AgentsView: View {
                     Text("PROCESS LINK / DETECTED").font(.system(size: 8, design: .monospaced)).tracking(0.8).foregroundStyle(accent(usage))
                 }
                 Spacer()
+                Button("详情") { showDetails(usage.id) }.buttonStyle(.borderless).foregroundStyle(accent(usage))
                 Text("#\(String(usage.id.pid))").font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
             }
             HStack(spacing: 18) {
@@ -240,5 +242,134 @@ private struct AgentSigil: View {
             }
             context.fill(Path(CGRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6)), with: .color(color))
         }.accessibilityHidden(true)
+    }
+}
+
+struct AgentDetailsView: View {
+    @ObservedObject var model: AgentsModel
+    let instance: AgentProcessID
+    @State private var query = ""
+    @State private var lastKnown: AgentUsage?
+    private var current: AgentUsage? { model.latest.usages.first { $0.id == instance } }
+    private var usage: AgentUsage? { current ?? lastKnown }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text((usage?.kind.rawValue.uppercased() ?? "AGENT") + " // INSPECTOR")
+                        .font(.system(size: 20, weight: .bold, design: .monospaced)).foregroundStyle(AgentsStyle.cyan)
+                    Text("ROOT #\(instance.pid) · PROCESS TREE TELEMETRY").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(!model.latest.available ? "读取失败 · 保留快照" : current == nil ? "实例已退出 · 最后快照" : "LIVE / \(model.latest.time.formatted(date: .omitted, time: .standard))")
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(AgentsStyle.green)
+            }
+            TextField("搜索进程名、PID、路径", text: $query).textFieldStyle(.roundedBorder)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if let usage {
+                        GroupBox("INSTANCE / 实例汇总") {
+                            VStack(spacing: 0) {
+                                row("启动时间", started(instance.started))
+                                row("运行时长", duration(max(0, model.latest.time.timeIntervalSince1970 - Double(instance.started) / 1e6)))
+                                row("进程数 / 线程数", "\(usage.processes.count) / \(usage.processes.compactMap { $0.detail?.threads }.reduce(0, +))（可读项合计）")
+                                row("CPU / 整机占比", usage.cpu.map { String(format: "%.2f%% / %.2f%%", $0, $0 / Double(max(1, ProcessInfo.processInfo.activeProcessorCount))) } ?? "建立基线 / 不可读")
+                                row("RSS / 物理足迹合计", bytes(usage.memory) + " / " + sum(usage.processes.compactMap { $0.detail?.footprint }))
+                                row("磁盘读 / 写速率", MetricsFormat.rate(usage.readRate) + " / " + MetricsFormat.rate(usage.writeRate))
+                                row("采样覆盖", usage.partial ? "部分指标缺失或新进程正在建立基线" : "CPU 与 RSS 已覆盖所有成员")
+                            }.padding(8)
+                        }
+                        Text("PROCESS TREE / 按父子关系排列，展开查看每个进程")
+                            .font(.system(size: 10, design: .monospaced)).foregroundStyle(AgentsStyle.cyan)
+                        ForEach(ordered(usage)) { process in
+                            if matches(process) {
+                                DisclosureGroup {
+                                    processDetails(process).padding(.top, 8)
+                                } label: {
+                                    HStack {
+                                        Text(String(repeating: "  ", count: min(8, depth(process, usage))) + (process.id == instance ? "◆ " : "└ ") + process.name)
+                                        Spacer()
+                                        Text("#\(process.id.pid)")
+                                        Text(process.cpu.map { String(format: "%.1f%%", $0) } ?? "—").frame(width: 65, alignment: .trailing)
+                                        Text(bytes(process.memory)).frame(width: 90, alignment: .trailing)
+                                    }.font(.system(size: 11, design: .monospaced))
+                                }.padding(12).background(AgentsStyle.card, in: RoundedRectangle(cornerRadius: 3)).tint(AgentsStyle.cyan)
+                            }
+                        }
+                    } else {
+                        Text("正在等待实例数据；实例可能已经退出。")
+                    }
+                    GroupBox("采集范围与口径") {
+                        Text("当前用户的本地进程及子进程。CPU 单核 100%，RSS 和物理足迹相加可能包含共享资源；虚拟内存不代表实际占用。磁盘计数为进程生命周期累计值，速度为两次采样增量。线程状态是采样瞬间值，BSD 状态不能证明 Agent 正在执行任务。\n\n未接入：会话、任务内容、模型、Token、费用、工具调用、远程 Agent、单进程网速。不会读取或展示提示词、完整命令参数和环境变量。")
+                            .font(.system(size: 11)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                    }
+                }.padding(.vertical, 3)
+            }
+        }.padding(20).frame(minWidth: 650, minHeight: 450).background(AgentsStyle.background).preferredColorScheme(.dark)
+            .onAppear { if let current { lastKnown = current } }
+            .onReceive(model.$latest) { snapshot in
+                if let value = snapshot.usages.first(where: { $0.id == instance }) { lastKnown = value }
+            }
+    }
+    private func processDetails(_ p: AgentProcessUsage) -> some View {
+        VStack(spacing: 0) {
+            row("PID / PPID / UID", "\(p.id.pid) / \(p.detail.map { String($0.parent) } ?? "—") / \(p.detail.map { String($0.uid) } ?? "—")")
+            row("启动时间", started(p.id.started))
+            row("可执行文件", p.detail?.executable.isEmpty == false ? p.detail!.executable : "不可读")
+            row("脚本 / 模块入口", p.detail?.entrypoint.isEmpty == false ? p.detail!.entrypoint : "未提供 / 原生进程")
+            row("BSD 状态", p.detail.map { state($0.status) } ?? "不可读")
+            row("线程 / 运行线程 / 优先级", number(p.detail?.threads) + " / " + number(p.detail?.runningThreads) + " / " + number(p.detail?.priority))
+            row("RSS / 物理足迹 / 虚拟内存", bytes(p.memory) + " / " + bytes(p.detail?.footprint) + " / " + bytes(p.detail?.virtualBytes))
+            row("累计用户 / 内核 CPU 时间", seconds(p.detail?.userNS) + " / " + seconds(p.detail?.systemNS))
+            row("磁盘累计读 / 写", bytes(p.detail?.readBytes) + " / " + bytes(p.detail?.writtenBytes))
+            row("磁盘读 / 写速率", MetricsFormat.rate(p.readRate) + " / " + MetricsFormat.rate(p.writeRate))
+            row("缺页 / 页入 / 上下文切换累计", number(p.detail?.faults) + " / " + number(p.detail?.pageins) + " / " + number(p.detail?.switches))
+        }.textSelection(.enabled)
+    }
+    private func row(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(title).foregroundStyle(.secondary).frame(width: 165, alignment: .leading)
+            Text(value).frame(maxWidth: .infinity, alignment: .leading)
+        }.font(.system(size: 11, design: .monospaced)).padding(.vertical, 6).textSelection(.enabled)
+    }
+    private func matches(_ p: AgentProcessUsage) -> Bool {
+        query.isEmpty || "\(p.name) \(p.id.pid) \(p.detail?.executable ?? "") \(p.detail?.entrypoint ?? "")".localizedCaseInsensitiveContains(query)
+    }
+    private func depth(_ p: AgentProcessUsage, _ usage: AgentUsage) -> Int {
+        let byPID = Dictionary(uniqueKeysWithValues: usage.processes.map { ($0.id.pid, $0) })
+        var parent = p.detail?.parent ?? 0, visited: Set<Int32> = [p.id.pid], result = 0
+        while let ancestor = byPID[parent], visited.insert(parent).inserted {
+            result += 1; parent = ancestor.detail?.parent ?? 0
+        }
+        return result
+    }
+    private func ordered(_ usage: AgentUsage) -> [AgentProcessUsage] {
+        let byPID = Dictionary(uniqueKeysWithValues: usage.processes.map { ($0.id.pid, $0) })
+        let children = Dictionary(grouping: usage.processes, by: { $0.detail?.parent ?? 0 })
+        var result: [AgentProcessUsage] = [], visited: Set<AgentProcessID> = []
+        func append(_ p: AgentProcessUsage) {
+            guard visited.insert(p.id).inserted else { return }
+            result.append(p)
+            for child in (children[p.id.pid] ?? []).sorted(by: { $0.id.pid < $1.id.pid }) { append(child) }
+        }
+        if let root = byPID[instance.pid] { append(root) }
+        for p in usage.processes.sorted(by: { $0.id.pid < $1.id.pid }) { append(p) }
+        return result
+    }
+    private func started(_ value: UInt64) -> String { Date(timeIntervalSince1970: Double(value) / 1e6).formatted(date: .numeric, time: .standard) }
+    private func duration(_ value: Double) -> String { String(format: "%dh %02dm %02ds", Int(value) / 3600, Int(value) / 60 % 60, Int(value) % 60) }
+    private func bytes(_ value: UInt64?) -> String { value.map { MetricsFormat.bytes($0) } ?? "不可读" }
+    private func sum(_ values: [UInt64]) -> String { values.isEmpty ? "不可读" : MetricsFormat.bytes(values.reduce(0, +)) }
+    private func number<T: BinaryInteger>(_ value: T?) -> String { value.map { String($0) } ?? "不可读" }
+    private func seconds(_ value: UInt64?) -> String { value.map { String(format: "%.3f s", Double($0) / 1e9) } ?? "不可读" }
+    private func state(_ value: Int32) -> String {
+        switch value {
+        case 1: return "SIDL / 创建中"
+        case 2: return "SRUN / 可运行"
+        case 3: return "SSLEEP / 等待"
+        case 4: return "SSTOP / 停止"
+        case 5: return "SZOMB / 僵尸"
+        default: return "未知 (\(value))"
+        }
     }
 }
