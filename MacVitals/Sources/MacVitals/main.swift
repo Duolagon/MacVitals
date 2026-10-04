@@ -58,12 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func update() {
         let s = monitor.sample()
-        item.button?.title = ""
-        if let button = item.button {
-            button.effectiveAppearance.performAsCurrentDrawingAppearance {
-                button.image = StatusBarText.image(cpu: s.cpu, memory: s.memoryPercent, download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond)
-            }
-        }
+        item.button?.image = nil
+        item.button?.title = StatusBarText.title(cpu: s.cpu, memory: s.memoryPercent, download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond)
         item.button?.setAccessibilityLabel(StatusBarText.title(cpu: s.cpu, memory: s.memoryPercent, download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond))
         item.button?.toolTip = "MacVitals · \(s.networkInterface) · 下载 \(MetricsFormat.rate(s.downloadBytesPerSecond)) · 上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))"
         dashboard.record(s)
