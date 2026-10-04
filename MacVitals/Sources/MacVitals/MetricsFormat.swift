@@ -17,6 +17,15 @@ enum MetricsFormat {
         guard value < 999.95 else { return "   >1E/s" }
         return String(format: "%5.1f%@/s", value, units[index])
     }
+    /// Four characters for the menu bar; precise rates remain in the panel.
+    static func menuRate(_ value: Double?) -> String {
+        guard var value, value.isFinite, value >= 0 else { return "  — " }
+        let units = ["B", "K", "M", "G", "T", "P", "E"]
+        var index = 0
+        while value >= 999.5 && index < units.count - 1 { value /= 1000; index += 1 }
+        guard value < 999.5 else { return " >1E" }
+        return String(format: "%3.0f%@", value, units[index])
+    }
     static func rate(_ value: Double?) -> String {
         guard let value else { return "采样中" }
         guard value.isFinite, value >= 0 else { return "不可用" }

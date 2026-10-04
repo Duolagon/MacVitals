@@ -19,9 +19,13 @@ final class MetricsTests {
         let baseline = StatusBarText.title(cpu: 0, memory: 0, download: 0, upload: 0).count
         for value in [0.0, 9, 10, 99, 100, 999.94, 999.95, 1000, 1e6, 1e20] {
             XCTAssertEqual(MetricsFormat.compactRate(value).count, 8)
+            XCTAssertEqual(MetricsFormat.menuRate(value).count, 4)
             XCTAssertEqual(StatusBarText.title(cpu: value, memory: value, download: value, upload: value).count, baseline)
         }
         XCTAssertEqual(MetricsFormat.compactRate(nil).count, 8)
+        XCTAssertEqual(MetricsFormat.menuRate(nil).count, 4)
+        XCTAssertEqual(MetricsFormat.menuRate(999.5), "  1K")
+        XCTAssertTrue(StatusBarText.width <= 194)
         let interfaces = [
             NetworkInterfaceReading(name: "utun0", index: 1, address: "10.0.0.1", counters: .init(received: 0, sent: 0)),
             NetworkInterfaceReading(name: "en0", index: 2, address: "192.168.1.2", counters: .init(received: 0, sent: 0)),

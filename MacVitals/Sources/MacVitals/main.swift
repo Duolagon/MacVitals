@@ -55,7 +55,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 }
                 print("status frame: \(window.convertToScreen(button.convert(button.bounds, to: nil)))")
                 print("status title: \(button.title)")
-                for screen in NSScreen.screens { print("screen: \(screen.frame), visible: \(screen.visibleFrame)") }
+                for screen in NSScreen.screens {
+                    print("screen: \(screen.frame), visible: \(screen.visibleFrame)")
+                    print("menu right area: \(String(describing: screen.auxiliaryTopRightArea)), left area: \(String(describing: screen.auxiliaryTopLeftArea))")
+                }
                 print("autosave: \(self.item.autosaveName ?? "nil")")
                 NSApp.terminate(nil)
             }
