@@ -4,8 +4,22 @@ import AppKit
 /// Monospaced spaces keep labels and trailing digits in the same positions.
 enum StatusBarText {
     static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
-    static var width: CGFloat {
-        ceil(("CPU 100%  MEM 100% ↓ 999.9K/s ↑ 999.9K/s" as NSString).size(withAttributes: [.font: font]).width) + 16
+    // Two rows keep all four readings within a compact menu bar item.
+    static let width: CGFloat = 154
+    static func image(cpu: Double?, memory: Double?, download: Double?, upload: Double?) -> NSImage {
+        let image = NSImage(size: NSSize(width: width - 12, height: 22))
+        image.lockFocus()
+        let smallFont = NSFont.monospacedSystemFont(ofSize: 9, weight: .medium)
+        func draw(_ text: String, x: CGFloat, y: CGFloat, color: NSColor) {
+            (text as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: [.font: smallFont, .foregroundColor: color])
+        }
+        draw("CPU" + field(cpu, rounding: .toNearestOrAwayFromZero), x: 0, y: 11, color: .labelColor)
+        draw("MEM" + field(memory, rounding: .towardZero), x: 75, y: 11, color: .labelColor)
+        draw("↓" + MetricsFormat.compactRate(download), x: 0, y: 0, color: .systemBlue)
+        draw("↑" + MetricsFormat.compactRate(upload), x: 75, y: 0, color: .systemOrange)
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
     }
     static func title(cpu: Double?, memory: Double?, download: Double? = nil, upload: Double? = nil) -> String {
         "CPU \(field(cpu, rounding: .toNearestOrAwayFromZero))  MEM \(field(memory, rounding: .towardZero)) ↓ \(MetricsFormat.compactRate(download)) ↑ \(MetricsFormat.compactRate(upload))"

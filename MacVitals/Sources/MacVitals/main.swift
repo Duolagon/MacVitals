@@ -6,12 +6,15 @@ import IOKit.ps
 import ServiceManagement
 import CMetrics
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var item: NSStatusItem!
     private var timer: Timer?
     private let monitor = Monitor()
     private let dashboard = DashboardModel()
     private let popover = NSPopover()
+    private var outsideClickMonitor: Any?
+    private var localClickMonitor: Any?
+    private var resignObserver: NSObjectProtocol?
     private var detailsWindow: NSWindow?
     private let detailsQueue = DispatchQueue(label: "local.macvitals.details", qos: .utility)
     private var detailsMonitor: DetailsMonitor?
@@ -25,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.toolTip = "MacVitals · 点击查看系统状态"
         item.button?.target = self
         item.button?.action = #selector(showDashboard)
+        popover.delegate = self
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 420, height: 660)
         popover.contentViewController = NSHostingController(rootView: DashboardView(model: dashboard, settings: { [weak self] in self?.showSettings() }, showDetails: { [weak self] in self?.showDetails() }))
@@ -54,7 +58,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private func update() {
         let s = monitor.sample()
-        item.button?.title = StatusBarText.title(cpu: s.cpu, memory: s.memoryPercent, download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond)
+        item.button?.title = ""
+        if let button = item.button {
+            button.effectiveAppearance.performAsCurrentDrawingAppearance {
+                button.image = StatusBarText.image(cpu: s.cpu, memory: s.memoryPercent, download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond)
+            }
+        }
+        item.button?.setAccessibilityLabel(StatusBarText.title(cpu: s.cpu, memory: s.memoryPercent, download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond))
         item.button?.toolTip = "MacVitals · \(s.networkInterface) · 下载 \(MetricsFormat.rate(s.downloadBytesPerSecond)) · 上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))"
         dashboard.record(s)
     }
@@ -87,8 +97,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showDashboard() {
         guard let button = item.button else { return }
         if popover.isShown { popover.performClose(nil) }
-        else { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+        else {
+            NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+            startDismissMonitoring()
+        }
     }
+    private func startDismissMonitoring() {
+        stopDismissMonitoring()
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            self?.popover.performClose(nil)
+        }
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
+            guard let self, self.popover.isShown else { return event }
+            if event.type == .keyDown {
+                if event.keyCode == 53 { self.popover.performClose(nil); return nil }
+            } else if event.window !== self.popover.contentViewController?.view.window && event.window !== self.item.button?.window {
+                self.popover.performClose(nil)
+            }
+            return event
+        }
+        resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main) { [weak self] _ in
+            self?.popover.performClose(nil)
+        }
+    }
+    private func stopDismissMonitoring() {
+        if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
+        if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        outsideClickMonitor = nil; localClickMonitor = nil; resignObserver = nil
+    }
+    func popoverDidClose(_ notification: Notification) { stopDismissMonitoring() }
     private func showSettings() {
         guard let button = item.button else { return }
         popover.performClose(nil)
@@ -110,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func openActivity() { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
     @objc private func quit() { NSApplication.shared.terminate(nil) }
-    func applicationWillTerminate(_ notification: Notification) { timer?.invalidate(); detailsTimer?.invalidate() }
+    func applicationWillTerminate(_ notification: Notification) { stopDismissMonitoring(); timer?.invalidate(); detailsTimer?.invalidate() }
 }
 if CommandLine.arguments.contains("--sensors") {
     exit(Int32(mv_smc_dump()))
