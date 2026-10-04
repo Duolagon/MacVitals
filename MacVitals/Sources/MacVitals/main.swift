@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var outsideClickMonitor: Any?
     private var localClickMonitor: Any?
     private var resignObserver: NSObjectProtocol?
+    private var previewWindow: NSWindow?
     private var detailsWindow: NSWindow?
     private let detailsQueue = DispatchQueue(label: "local.macvitals.details", qos: .utility)
     private var detailsMonitor: DetailsMonitor?
@@ -32,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         item.button?.action = #selector(showDashboard)
         popover.delegate = self
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 420, height: 660)
+        popover.contentSize = NSSize(width: 440, height: MonitorStyle.panelHeight)
         popover.contentViewController = NSHostingController(rootView: DashboardView(model: dashboard, settings: { [weak self] in self?.showSettings() }, showDetails: { [weak self] in self?.showDetails() }))
         let refresh = NSMenuItem(title: "刷新间隔", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
@@ -67,6 +68,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         RunLoop.main.add(t, forMode: .common); detailsTimer = t
         updateDetails()
         if CommandLine.arguments.contains("--show-details") { showDetails() }
+        if CommandLine.arguments.contains("--show-dashboard") {
+            DispatchQueue.main.async { [weak self] in self?.showDashboard() }
+        }
+        if CommandLine.arguments.contains("--preview-dashboard") {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: MonitorStyle.panelHeight), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "MacVitals · 实时面板预览"
+            window.contentViewController = NSHostingController(rootView: DashboardView(model: dashboard, settings: { [weak self] in self?.showSettings() }, showDetails: { [weak self] in self?.showDetails() }))
+            window.isReleasedWhenClosed = false; window.center()
+            previewWindow = window
+            NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        }
     }
     private func startTimer() {
         timer?.invalidate()
@@ -77,7 +89,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let s = monitor.sample()
         item.button?.image = nil
         item.button?.title = StatusBarText.title(cpu: s.cpu, memory: s.memoryPercent, download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond)
-        item.button?.setAccessibilityLabel(StatusBarText.title(cpu: s.cpu, memory: s.memoryPercent, download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond))
+        let cpuLabel = s.cpu.map { String(format: "%.0f%%", $0) } ?? "采样中"
+        let memoryLabel = s.memoryPercent.map { "\(Int($0))%" } ?? "不可用"
+        item.button?.setAccessibilityLabel("CPU \(cpuLabel)，内存 \(memoryLabel)，下载 \(MetricsFormat.rate(s.downloadBytesPerSecond))，上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))")
         item.button?.toolTip = "MacVitals · \(s.networkInterface) · 下载 \(MetricsFormat.rate(s.downloadBytesPerSecond)) · 上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))"
         dashboard.record(s)
     }

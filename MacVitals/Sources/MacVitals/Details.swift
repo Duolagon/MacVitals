@@ -212,38 +212,92 @@ final class DetailsMonitor {
     private static func sysInt(_ name: String) -> Int { var value: Int32 = 0; var size = MemoryLayout<Int32>.size; return sysctlbyname(name, &value, &size, nil, 0) == 0 ? Int(value) : -1 }
 }
 
+
 struct DetailsView: View {
     @ObservedObject var model: DashboardModel
+    @State private var query = ""
     @State private var expanded: Set<String> = ["系统与 CPU", "芯片功耗 · 系统估算", "内存", "磁盘", "电池", "风扇", "GPU"]
+    private var visibleSections: [DetailSection] {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return model.details }
+        return model.details.compactMap { section in
+            if section.title.localizedCaseInsensitiveContains(text) { return section }
+            let rows = section.rows.filter { $0.label.localizedCaseInsensitiveContains(text) || $0.value.localizedCaseInsensitiveContains(text) }
+            return rows.isEmpty ? nil : DetailSection(title: section.title, rows: rows)
+        }
+    }
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("系统详情").font(.system(size: 26, weight: .bold, design: .rounded))
-                        Text("每 5 秒更新 · 只读采集").font(.caption).foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "square.grid.2x2").font(.system(size: 22)).foregroundStyle(MonitorStyle.blue)
+                    .frame(width: 44, height: 44).background(MonitorStyle.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("系统详情").font(.system(size: 23, weight: .semibold))
+                    Text("MacVitals · 每 5 秒刷新").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("搜索指标或数值", text: $query).textFieldStyle(.plain)
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            .buttonStyle(.plain).accessibilityLabel("清除搜索")
                     }
-                    Spacer()
-                    Text(model.detailsUpdated, style: .time).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                Text("温度按 SMC 键分组。候选分组不等于已确认物理位置；Tp00 采用开源工具的 M5 超级核心区域映射。零转速是有效读数。").font(.caption).foregroundStyle(.secondary)
-                ForEach(model.details) { section in
-                    DisclosureGroup(isExpanded: Binding(get: { expanded.contains(section.id) }, set: { if $0 { expanded.insert(section.id) } else { expanded.remove(section.id) } })) {
-                        VStack(spacing: 0) {
-                            ForEach(section.rows) { entry in
-                                HStack(alignment: .top, spacing: 16) {
-                                    Text(entry.label).foregroundStyle(.secondary).frame(width: 220, alignment: .leading)
-                                    Text(entry.value).frame(maxWidth: .infinity, alignment: .trailing).textSelection(.enabled)
-                                }.font(.system(size: 12)).padding(.vertical, 7)
-                                Divider().opacity(0.35)
+                }.font(.system(size: 12)).padding(10).frame(width: 210)
+                    .background(MonitorStyle.card, in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(MonitorStyle.border))
+            }.padding(22)
+            Divider().overlay(MonitorStyle.border)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text(query.isEmpty ? "全部指标" : "搜索结果").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(visibleSections.reduce(0) { $0 + $1.rows.count }) 项").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Button("全部展开") { expanded = Set(model.details.map { $0.id }) }.buttonStyle(.borderless).font(.system(size: 11))
+                        Button("收起") { expanded = [] }.buttonStyle(.borderless).font(.system(size: 11)).disabled(!query.isEmpty)
+                    }
+                    ForEach(visibleSections) { section in
+                        DisclosureGroup(isExpanded: Binding(get: { !query.isEmpty || expanded.contains(section.id) }, set: { if $0 { expanded.insert(section.id) } else { expanded.remove(section.id) } })) {
+                            VStack(spacing: 0) {
+                                ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, entry in
+                                    HStack(alignment: .top, spacing: 20) {
+                                        Text(entry.label).foregroundStyle(.secondary).frame(width: 210, alignment: .leading)
+                                        Text(entry.value).fontWeight(.medium).monospacedDigit()
+                                            .frame(maxWidth: .infinity, alignment: .trailing).textSelection(.enabled)
+                                    }.font(.system(size: 12)).padding(.vertical, 10).padding(.horizontal, 8)
+                                        .background(index.isMultiple(of: 2) ? Color.white.opacity(0.025) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                                }
+                                if section.title.contains("温度") {
+                                    Text("温度按 SMC 候选键分组，分组不代表已确认的物理位置；Tp00 使用 M5 CPU 区域映射。")
+                                        .font(.system(size: 10)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 10)
+                                }
+                            }.padding(.top, 10)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text(section.title).font(.system(size: 13, weight: .semibold))
+                                Text("\(section.rows.count)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                             }
-                        }.padding(.top, 8)
-                    } label: { Text(section.title).font(.system(size: 14, weight: .semibold)) }
-                    .padding(14).background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
-                }
-                if model.details.isEmpty { ProgressView("正在读取详细信息…").frame(maxWidth: .infinity) }
-            }.padding(24)
+                        }.tint(MonitorStyle.blue).modifier(MonitorCard())
+                    }
+                    if model.details.isEmpty {
+                        ProgressView("正在采集系统指标…").frame(maxWidth: .infinity).padding(40)
+                    } else if visibleSections.isEmpty {
+                        VStack(spacing: 10) {
+                            Image(systemName: "magnifyingglass").font(.system(size: 25)).foregroundStyle(.secondary)
+                            Text("没有匹配的指标").font(.system(size: 14, weight: .medium))
+                            Text("尝试搜索 CPU、温度、网络或传感器键名").font(.system(size: 11)).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity).padding(40)
+                    }
+                }.padding(22)
+            }
+            HStack {
+                Label("只读系统采集", systemImage: "checkmark.shield").font(.system(size: 10))
+                Spacer()
+                Text("最近更新 " + model.detailsUpdated.formatted(date: .omitted, time: .standard)).font(.system(size: 10)).monospacedDigit()
+            }.foregroundStyle(.secondary).padding(.horizontal, 22).padding(.vertical, 12)
+                .overlay(alignment: .top) { Rectangle().fill(MonitorStyle.border).frame(height: 1) }
         }.frame(minWidth: 660, minHeight: 550)
-            .background(Color(red: 0.065, green: 0.08, blue: 0.12)).preferredColorScheme(.dark)
+            .background(MonitorStyle.background).preferredColorScheme(.dark)
     }
 }
