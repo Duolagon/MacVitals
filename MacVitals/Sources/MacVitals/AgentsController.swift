@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Darwin
 
 /// Independent status item, lifecycle, sampling timer and background queue.
 final class AgentsController: NSObject, NSPopoverDelegate {
@@ -17,6 +18,8 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     private let detailWindows = AgentInspectorWindows()
     private let networkWindows = AgentInspectorWindows()
     private var didPreviewDetails = false
+    private let controlQueue = DispatchQueue(label: "local.macvitals.agent-control", qos: .userInitiated)
+    private let terminator = AgentTerminator()
     private var interval: Double {
         let value = UserDefaults.standard.double(forKey: "agents.interval")
         return [2.0, 5, 10].contains(value) ? value : 2
@@ -42,7 +45,8 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         AgentsView(model: model, interval: interval, setInterval: { [weak self] value in
             UserDefaults.standard.set(value, forKey: "agents.interval")
             self?.configureView(); self?.startTimer()
-        }, showDetails: { [weak self] id in self?.showDetails(id) }, showNetwork: { [weak self] id in self?.showNetwork(id) })
+        }, showDetails: { [weak self] id in self?.showDetails(id) }, showNetwork: { [weak self] id in self?.showNetwork(id) },
+           terminate: { [weak self] request in self?.requestTermination(request) })
     }
     private func startTimer() {
         timer?.invalidate()
@@ -133,7 +137,8 @@ final class AgentsController: NSObject, NSPopoverDelegate {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             let session = inspectorSession(detailWindows, id: id)
             window.title = "Agent 详情 · PID \(id.pid)"
-            window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, session: session, openNetwork: { [weak self] node in self?.showNetwork(id, selected: node) }))
+            window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, session: session, openNetwork: { [weak self] node in self?.showNetwork(id, selected: node) },
+                terminate: { [weak self] request in self?.requestTermination(request) }))
             window.center(); detailWindows.insert(window, session: session, for: id)
         }
         popover.performClose(nil)
@@ -156,10 +161,56 @@ final class AgentsController: NSObject, NSPopoverDelegate {
             if node != nil { session.navigation.expandedGraph = false }
             window.title = "神经网络 · PID \(id.pid)"
             window.collectionBehavior = [.fullScreenPrimary]
-            window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, session: session, networkWindow: true))
+            window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, session: session, networkWindow: true,
+                terminate: { [weak self] request in self?.requestTermination(request) }))
             window.center(); networkWindows.insert(window, session: session, for: id)
         }
         NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+    }
+    private func requestTermination(_ request: AgentTerminationRequest) {
+        guard !model.controlBusy, model.latest.available,
+              let usage = model.latest.usages.first(where: { $0.id == request.instance }),
+              let plan = AgentTerminationPlan(usage: usage, process: request.process) else {
+            model.controlStatus = "该进程已不可用，未发送结束请求。"; return
+        }
+        popover.performClose(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let action = request.force ? "强制结束" : "结束"
+        let target = request.process ?? request.instance
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "\(action) \(plan.name)？"
+        let scope = plan.singleProcess ? "仅结束选中的进程，子进程是否随之退出由应用决定。" : "结束该实例及当前识别出的 \(plan.targets.count) 个关联进程；桌面 Agent 应用也会退出。"
+        alert.informativeText = "PID \(target.pid)\n\(scope)\n正在运行的任务会中断，未保存内容可能丢失。" + (request.force ? "\n强制结束会立即停止进程。" : "")
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: action)
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        model.controlBusy = true
+        model.controlStatus = "正在\(action) \(plan.name) · PID \(target.pid)…"
+        controlQueue.async { [weak self] in
+            guard let self else { return }
+            let result = Result { try self.terminator.execute(plan, force: request.force) }
+            DispatchQueue.main.async {
+                self.model.controlBusy = false
+                switch result {
+                case .success(let report):
+                    self.model.controlStatus = "PID \(target.pid)：已发送\(action)请求 \(report.sent.count) 个，跳过 \(report.skipped.count) 个，失败 \(report.failures.count) 个。"
+                    if !report.failures.isEmpty {
+                        let detail = report.failures.prefix(8).map { id, code in "PID \(id.pid)：\(String(cString: strerror(code)))" }.joined(separator: "\n")
+                        self.showControlError("部分进程未能结束", detail: detail)
+                    }
+                case .failure(let error):
+                    self.model.controlStatus = error.localizedDescription
+                    self.showControlError("结束请求未执行", detail: error.localizedDescription)
+                }
+                self.sample()
+            }
+        }
+    }
+    private func showControlError(_ title: String, detail: String) {
+        let alert = NSAlert(); alert.alertStyle = .warning
+        alert.messageText = title; alert.informativeText = detail
+        alert.addButton(withTitle: "好"); alert.runModal()
     }
     /// Export only this module's own view with live samples, for layout review.
     private func exportDetails(_ id: AgentProcessID, to destination: URL) {

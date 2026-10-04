@@ -7,6 +7,8 @@ struct AgentHistory {
 final class AgentsModel: ObservableObject {
     @Published var latest = AgentSnapshot()
     @Published var history: [AgentHistory] = []
+    @Published var controlBusy = false
+    @Published var controlStatus: String?
     func record(_ snapshot: AgentSnapshot) {
         latest = snapshot
         history.removeAll { $0.time < snapshot.time.addingTimeInterval(-120) }
@@ -27,6 +29,7 @@ struct AgentsView: View {
     let setInterval: (Double) -> Void
     var showDetails: (AgentProcessID) -> Void = { _ in }
     var showNetwork: (AgentProcessID) -> Void = { _ in }
+    var terminate: (AgentTerminationRequest) -> Void = { _ in }
     private var totalMemory: UInt64 { ProcessInfo.processInfo.physicalMemory }
     private var cores: Double { Double(max(1, ProcessInfo.processInfo.activeProcessorCount)) }
     var body: some View {
@@ -64,6 +67,10 @@ struct AgentsView: View {
                 }.padding(18)
             }
             VStack(alignment: .leading, spacing: 7) {
+                if let status = model.controlStatus {
+                    Text(status).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2)
+                        .accessibilityLabel("进程操作状态：" + status)
+                }
                 HStack {
                     Text("本地进程存在，不代表正在执行任务").font(.system(size: 10)).foregroundStyle(.secondary)
                     Spacer()
@@ -119,6 +126,9 @@ struct AgentsView: View {
                 }
                 Spacer()
                 Button("详情") { showDetails(usage.id) }.buttonStyle(.borderless).foregroundStyle(accent(usage))
+                AgentTerminationMenu(title: "结束", enabled: !model.controlBusy && AgentTerminationPlan(usage: usage) != nil) { force in
+                    terminate(.init(instance: usage.id, force: force))
+                }
                 Text("#\(String(usage.id.pid))").font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
             }
             HStack(spacing: 18) {
@@ -263,6 +273,7 @@ struct AgentDetailsView: View {
     @ObservedObject var session = AgentInspectorSession()
     var networkWindow = false
     var openNetwork: (AgentProcessID) -> Void = { _ in }
+    var terminate: (AgentTerminationRequest) -> Void = { _ in }
     private var current: AgentUsage? { model.latest.available ? model.latest.usages.first { $0.id == instance } : nil }
     private var usage: AgentUsage? { session.usage(in: model.latest, instance: instance) }
     private var sampleTime: Date { session.sampleTime(in: model.latest, instance: instance) }
@@ -304,6 +315,9 @@ struct AgentDetailsView: View {
                                     Text(selected.cpu.map { String(format: "%.1f%%", $0) } ?? "—")
                                         .font(.system(size: 25, weight: .light, design: .monospaced)).foregroundStyle(accent).monospacedDigit()
                                 }
+                                AgentTerminationMenu(title: "结束此进程", enabled: !model.controlBusy && current?.processes.contains(where: { $0.id == selected.id }) == true) { force in
+                                    terminate(.init(instance: instance, process: selected.id, force: force))
+                                }
                                 processDetails(selected)
                             } else if let id = session.navigation.selection {
                                 terminalSection("NODE OFFLINE / 节点不可见") {
@@ -340,7 +354,8 @@ struct AgentDetailsView: View {
                 Rectangle().fill(model.latest.available && current != nil ? AgentsStyle.green : .orange).frame(width: 5, height: 5)
                 Text(!model.latest.available ? "READ FAILED / 保留最后快照" : current == nil ? "OFFLINE / 实例已退出" : "LINK ESTABLISHED / 本地进程可见")
                 Spacer()
-                Text("120s BUFFER · READ ONLY · LOCAL")
+                Text(model.controlStatus ?? "120s BUFFER · LOCAL")
+                    .lineLimit(1).help(model.controlStatus ?? "本地进程监控")
             }.font(.system(size: 11)).foregroundStyle(.secondary).padding(12)
                 .overlay(alignment: .top) { Rectangle().fill(accent.opacity(0.25)).frame(height: 1) }
         }.frame(minWidth: 980, minHeight: 680)
@@ -361,6 +376,9 @@ struct AgentDetailsView: View {
                     .font(.system(size: 12)).foregroundStyle(accent.opacity(0.8))
             }
             Spacer()
+            AgentTerminationMenu(title: "结束实例", enabled: !model.controlBusy && current.flatMap { AgentTerminationPlan(usage: $0) } != nil) { force in
+                terminate(.init(instance: instance, force: force))
+            }
             VStack(alignment: .trailing, spacing: 5) {
                 Text(String(format: "%02d", usage?.processes.count ?? 0)).font(.system(size: 27, weight: .light, design: .monospaced)).foregroundStyle(accent)
                 Text("个进程 · " + (current == nil ? "最后采样 " : "") + sampleTime.formatted(date: .omitted, time: .standard))
@@ -456,6 +474,21 @@ struct AgentDetailsView: View {
         case 5: return "SZOMB / 僵尸"
         default: return "未知 (\(value))"
         }
+    }
+}
+
+private struct AgentTerminationMenu: View {
+    let title: String
+    let enabled: Bool
+    let action: (Bool) -> Void
+    var body: some View {
+        Menu {
+            Button("结束…", role: .destructive) { action(false) }
+            Button("强制结束…", role: .destructive) { action(true) }
+        } label: {
+            Label(title, systemImage: "stop.circle").font(.system(size: 11, weight: .medium)).foregroundStyle(.orange)
+        }.menuStyle(.borderlessButton).fixedSize().disabled(!enabled)
+            .accessibilityLabel(title).help("选择结束方式，确认后才发送请求")
     }
 }
 

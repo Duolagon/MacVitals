@@ -496,6 +496,9 @@ func testNativeAgentDiscoveryAndIdentityGuard() {
 let tests = MetricsTests()
 let agentTests = AgentTests()
 let cases: [(String, () -> Void)] = [
+    ("Agent termination / instance scope and child-first order", testAgentTerminationScopeAndOrder),
+    ("Agent termination / reuse, reparenting, ownership and failures", testAgentTerminationRejectsStaleAndUnownedTargets),
+    ("Agent termination / native TERM and KILL on controlled children", testNativeAgentTerminationSignals),
     ("System slow metrics / cadence, force refresh and failure", testSlowMetricCadence),
     ("Details sampling / close, minimize and stale jobs", testDetailsSamplingLifecycle),
     ("Agent selective resources / cache, discovery and recovery", testAgentSelectiveResourcesAndCache),

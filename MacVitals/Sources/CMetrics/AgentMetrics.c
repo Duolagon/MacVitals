@@ -6,6 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <signal.h>
+#include <errno.h>
+#include <sys/proc.h>
 
 static void entrypoint(pid_t pid, char *out, size_t capacity) {
     char buffer[16384]; size_t size = sizeof(buffer);
@@ -114,4 +117,14 @@ int mv_agent_resources(int32_t pid, uint64_t started, MVAgentProcess *out) {
     if (!identity(pid, started, out)) return 0;
     resources(out);
     return 1;
+}
+
+int mv_agent_signal(int32_t pid, uint64_t started, int signal_number) {
+    if (pid <= 1 || pid == getpid() || !started || (signal_number != SIGTERM && signal_number != SIGKILL)) return EINVAL;
+    struct proc_bsdinfo info = {0};
+    if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info)) != sizeof(info)) return ESRCH;
+    if (info.pbi_uid != getuid()) return EPERM;
+    if (info.pbi_start_tvsec * 1000000ULL + info.pbi_start_tvusec != started) return ESTALE;
+    if (info.pbi_status == SZOMB) return ESRCH;
+    return kill(pid, signal_number) == 0 ? 0 : errno;
 }

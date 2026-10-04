@@ -21,3 +21,6 @@ int mv_agent_identities(MVAgentIdentity *out, int capacity);
 // Return 0 when the process exited, changed identity or belongs to another user.
 int mv_agent_metadata(int32_t pid, uint64_t started, MVAgentProcess *out);
 int mv_agent_resources(int32_t pid, uint64_t started, MVAgentProcess *out);
+
+// TERM/KILL only; recheck owner and start time immediately before signaling. Returns an errno code.
+int mv_agent_signal(int32_t pid, uint64_t started, int signal_number);
