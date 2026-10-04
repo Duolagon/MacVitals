@@ -24,13 +24,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var interval: Double { let v = UserDefaults.standard.double(forKey: "interval"); return [1.0, 2, 5, 10].contains(v) ? v : 2 }
     func applicationDidFinishLaunching(_ notification: Notification) {
         let statusName = "MacVitals"
-        let preferences = UserDefaults.standard
-        // Seed a right-side position once. This preference is a best-effort
-        // macOS convention; autosaveName then preserves subsequent user moves.
-        if !preferences.bool(forKey: "statusPositionInitialized") {
-            preferences.set(0, forKey: "NSStatusItem Preferred Position " + statusName)
-            preferences.set(true, forKey: "statusPositionInitialized")
-        }
         item = NSStatusBar.system.statusItem(withLength: StatusBarText.width)
         item.autosaveName = statusName
         item.button?.font = StatusBarText.font
@@ -55,6 +48,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 MacVitals", action: #selector(quit), keyEquivalent: "q"); quit.target = self; menu.addItem(quit)
         update(); startTimer()
+        if CommandLine.arguments.contains("--status-layout-diagnose") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self, let button = self.item.button, let window = button.window else {
+                    print("status item window unavailable"); NSApp.terminate(nil); return
+                }
+                print("status frame: \(window.convertToScreen(button.convert(button.bounds, to: nil)))")
+                print("status title: \(button.title)")
+                for screen in NSScreen.screens { print("screen: \(screen.frame), visible: \(screen.visibleFrame)") }
+                print("autosave: \(self.item.autosaveName ?? "nil")")
+                NSApp.terminate(nil)
+            }
+        }
         let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.updateDetails() }
         RunLoop.main.add(t, forMode: .common); detailsTimer = t
         updateDetails()
