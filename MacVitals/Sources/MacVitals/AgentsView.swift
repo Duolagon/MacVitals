@@ -26,6 +26,7 @@ struct AgentsView: View {
     var interval: Double
     let setInterval: (Double) -> Void
     var showDetails: (AgentProcessID) -> Void = { _ in }
+    var showNetwork: (AgentProcessID) -> Void = { _ in }
     private var totalMemory: UInt64 { ProcessInfo.processInfo.physicalMemory }
     private var cores: Double { Double(max(1, ProcessInfo.processInfo.activeProcessorCount)) }
     var body: some View {
@@ -132,7 +133,18 @@ struct AgentsView: View {
                 Text("→ NOW")
             }.font(.system(size: 8, design: .monospaced)).foregroundStyle(accent(usage).opacity(0.8))
             historyStrip(usage)
-            processBus(usage)
+            processBus(usage).contentShape(Rectangle()).onTapGesture { showNetwork(usage.id) }
+            Button { showNetwork(usage.id) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                    Text("打开神经网络")
+                    Spacer()
+                    Image(systemName: "arrow.up.forward.app")
+                }.font(.system(size: 13, weight: .medium)).foregroundStyle(accent(usage))
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(accent(usage).opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(accent(usage).opacity(0.25)))
+            }.buttonStyle(.plain).accessibilityLabel("打开 " + usage.kind.rawValue + " 的独立神经网络窗口")
             HStack {
                 Text("磁盘 ↓ " + MetricsFormat.rate(usage.readRate))
                 Spacer()

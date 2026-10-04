@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Independent status item, lifecycle, sampling timer and background queue.
 final class AgentsController: NSObject, NSPopoverDelegate {
-    private let item = NSStatusBar.system.statusItem(withLength: 48)
+    private let item = NSStatusBar.system.statusItem(withLength: 56)
     private let popover = NSPopover()
     private let model = AgentsModel()
     private let sampler = AgentMonitor()
@@ -26,7 +26,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         item.autosaveName = "MacVitals.Agents"
         item.button?.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Agent Monitor")
         item.button?.imagePosition = .imageLeading
-        item.button?.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        item.button?.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
         item.button?.title = " —"
         item.button?.target = self; item.button?.action = #selector(toggle)
         popover.behavior = .transient; popover.delegate = self
@@ -42,7 +42,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         AgentsView(model: model, interval: interval, setInterval: { [weak self] value in
             UserDefaults.standard.set(value, forKey: "agents.interval")
             self?.configureView(); self?.startTimer()
-        }, showDetails: { [weak self] id in self?.showDetails(id) })
+        }, showDetails: { [weak self] id in self?.showDetails(id) }, showNetwork: { [weak self] id in self?.showNetwork(id, selected: id) })
     }
     private func startTimer() {
         timer?.invalidate()
@@ -130,6 +130,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         NSApp.activate(ignoringOtherApps: true); detailWindows[id]?.makeKeyAndOrderFront(nil)
     }
     private func showNetwork(_ id: AgentProcessID, selected node: AgentProcessID) {
+        popover.performClose(nil)
         let window: NSWindow
         if let existing = networkWindows[id] { window = existing }
         else {

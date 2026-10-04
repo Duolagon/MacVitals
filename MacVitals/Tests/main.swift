@@ -25,7 +25,8 @@ final class MetricsTests {
         XCTAssertEqual(MetricsFormat.compactRate(nil).count, 8)
         XCTAssertEqual(MetricsFormat.menuRate(nil).count, 4)
         XCTAssertEqual(MetricsFormat.menuRate(999.5), "  1K")
-        XCTAssertTrue(StatusBarText.width <= 194)
+        XCTAssertTrue(StatusBarText.width <= 250)
+        XCTAssertEqual(StatusBarText.font.pointSize, 13)
         let interfaces = [
             NetworkInterfaceReading(name: "utun0", index: 1, address: "10.0.0.1", counters: .init(received: 0, sent: 0)),
             NetworkInterfaceReading(name: "en0", index: 2, address: "192.168.1.2", counters: .init(received: 0, sent: 0)),

@@ -3,7 +3,7 @@ import AppKit
 /// Reserve three digits and the percent sign for each metric.
 /// Monospaced spaces keep labels and trailing digits in the same positions.
 enum StatusBarText {
-    static let font = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .medium)
+    static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
     static var width: CGFloat {
         ceil((title(cpu: 100, memory: 100, download: 999_900, upload: 999_900) as NSString).size(withAttributes: [.font: font]).width) + 12
     }
