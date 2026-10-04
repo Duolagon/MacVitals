@@ -14,8 +14,8 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     private var clickMonitor: Any?, localMonitor: Any?
     private var resignObserver: NSObjectProtocol?
     private var previewWindow: NSWindow?
-    private var detailWindows: [AgentProcessID: NSWindow] = [:]
-    private var networkWindows: [AgentProcessID: NSWindow] = [:]
+    private let detailWindows = AgentInspectorWindows()
+    private let networkWindows = AgentInspectorWindows()
     private var didPreviewDetails = false
     private var interval: Double {
         let value = UserDefaults.standard.double(forKey: "agents.interval")
@@ -42,7 +42,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         AgentsView(model: model, interval: interval, setInterval: { [weak self] value in
             UserDefaults.standard.set(value, forKey: "agents.interval")
             self?.configureView(); self?.startTimer()
-        }, showDetails: { [weak self] id in self?.showDetails(id) }, showNetwork: { [weak self] id in self?.showNetwork(id, selected: id) })
+        }, showDetails: { [weak self] id in self?.showDetails(id) }, showNetwork: { [weak self] id in self?.showNetwork(id) })
     }
     private func startTimer() {
         timer?.invalidate()
@@ -59,6 +59,10 @@ final class AgentsController: NSObject, NSPopoverDelegate {
             DispatchQueue.main.async {
                 self.busy = false; guard self.running else { return }
                 self.model.record(snapshot)
+                if snapshot.available {
+                    let active = Set(snapshot.usages.map { $0.id })
+                    self.detailWindows.prune(active: active); self.networkWindows.prune(active: active)
+                }
                 if !self.didPreviewDetails, let usage = snapshot.usages.max(by: { $0.processes.count < $1.processes.count }),
                    CommandLine.arguments.contains("--preview-agent-details") || CommandLine.arguments.contains("--export-agent-details") {
                     self.didPreviewDetails = true
@@ -118,31 +122,43 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         }
         NSApp.activate(ignoringOtherApps: true); previewWindow?.makeKeyAndOrderFront(nil)
     }
+    private func inspectorSession(_ windows: AgentInspectorWindows, id: AgentProcessID, selected: AgentProcessID? = nil) -> AgentInspectorSession {
+        let session = AgentInspectorSession(navigation: windows.navigation(for: id) ?? .init())
+        if let selected { session.navigation.selection = selected }
+        session.record(model.latest, instance: id)
+        return session
+    }
     private func showDetails(_ id: AgentProcessID) {
-        if detailWindows[id] == nil {
+        if detailWindows.entries[id] == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            let session = inspectorSession(detailWindows, id: id)
             window.title = "Agent 详情 · PID \(id.pid)"
-            window.isReleasedWhenClosed = false
-            window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, openNetwork: { [weak self] node in self?.showNetwork(id, selected: node) }))
-            window.center(); detailWindows[id] = window
+            window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, session: session, openNetwork: { [weak self] node in self?.showNetwork(id, selected: node) }))
+            window.center(); detailWindows.insert(window, session: session, for: id)
         }
         popover.performClose(nil)
-        NSApp.activate(ignoringOtherApps: true); detailWindows[id]?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true); detailWindows.entries[id]?.window.makeKeyAndOrderFront(nil)
     }
-    private func showNetwork(_ id: AgentProcessID, selected node: AgentProcessID) {
+    private func showNetwork(_ id: AgentProcessID, selected node: AgentProcessID? = nil) {
         popover.performClose(nil)
         let window: NSWindow
-        if let existing = networkWindows[id] { window = existing }
-        else {
+        if let existing = networkWindows.entries[id] {
+            window = existing.window
+            if let node {
+                existing.session.navigation.selection = node
+                existing.session.navigation.expandedGraph = false
+            }
+        } else {
             let available = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
             let size = NSSize(width: min(1280, available.width - 60), height: min(860, available.height - 60))
             window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            let session = inspectorSession(networkWindows, id: id, selected: node)
+            if node != nil { session.navigation.expandedGraph = false }
             window.title = "神经网络 · PID \(id.pid)"
-            window.isReleasedWhenClosed = false
             window.collectionBehavior = [.fullScreenPrimary]
-            window.center(); networkWindows[id] = window
+            window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, session: session, networkWindow: true))
+            window.center(); networkWindows.insert(window, session: session, for: id)
         }
-        window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, networkWindow: true, initialSelection: node))
         NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
     }
     /// Export only this module's own view with live samples, for layout review.
@@ -167,8 +183,8 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     func stop() {
         running = false; timer?.invalidate(); timer = nil
         popover.performClose(nil); stopDismissMonitoring()
-        for window in detailWindows.values { window.close() }; detailWindows.removeAll()
-        for window in networkWindows.values { window.close() }; networkWindows.removeAll()
+        detailWindows.closeAll()
+        networkWindows.closeAll()
         previewWindow?.close(); NSStatusBar.system.removeStatusItem(item)
     }
 }

@@ -6,6 +6,7 @@ func XCTAssertEqual(_ a: Double, _ b: Double, accuracy: Double) { if abs(a-b) > 
 func XCTAssertNotEqual<T: Equatable>(_ a: T, _ b: T) { if a == b { XCTFail("Expected different values") } }
 func XCTAssertGreaterThan(_ a: Double, _ b: Double) { if a <= b { XCTFail("\(a) <= \(b)") } }
 import Foundation
+import AppKit
 import Darwin
 import CMetrics
 
@@ -245,9 +246,98 @@ func testGraphNodeHitTesting() {
     XCTAssertNil(hit(CGPoint(x: 20, y: 20), zoom: 2, offset: CGSize(width: -40, height: 30)))
 }
 
+func inspectorFixture(_ root: AgentProcessID, child: AgentProcessID? = nil) -> AgentUsage {
+    var processes = [AgentProcessUsage(id: root, name: "codex", cpu: 2, memory: 100)]
+    if let child { processes.append(.init(id: child, name: "worker", cpu: 3, memory: 200)) }
+    return AgentUsage(id: root, kind: .codex, processes: processes, cpu: 5, memory: 300,
+                      readRate: 10, writeRate: 20, partial: false)
+}
+
+func testInspectorSelectedNodeExit() {
+    let root = AgentProcessID(pid: 10, started: 1_000_000)
+    let child = AgentProcessID(pid: 11, started: 2_000_000)
+    let session = AgentInspectorSession()
+    session.navigation.selection = child
+    XCTAssertEqual(session.selected(in: inspectorFixture(root, child: child), instance: root)?.id, child)
+    XCTAssertNil(session.selected(in: inspectorFixture(root), instance: root))
+    // A replacement with the same PID is a different process, not the selected node.
+    XCTAssertNil(session.selected(in: inspectorFixture(root, child: .init(pid: 11, started: 3_000_000)), instance: root))
+    XCTAssertEqual(session.navigation.selection, child)
+    session.navigation.selection = root
+    XCTAssertEqual(session.selected(in: inspectorFixture(root), instance: root)?.id, root)
+}
+
+func testInspectorFrozenSampleTime() {
+    let root = AgentProcessID(pid: 10, started: 1_000_000)
+    let session = AgentInspectorSession()
+    let online = AgentSnapshot(usages: [inspectorFixture(root)], sampled: true, time: Date(timeIntervalSince1970: 20))
+    session.record(online, instance: root)
+    let exited = AgentSnapshot(sampled: true, time: Date(timeIntervalSince1970: 90))
+    session.record(exited, instance: root)
+    XCTAssertEqual(session.usage(in: exited, instance: root)?.id, root)
+    XCTAssertEqual(session.sampleTime(in: exited, instance: root), online.time)
+    let failed = AgentSnapshot(available: false, sampled: true, time: Date(timeIntervalSince1970: 120))
+    session.record(failed, instance: root)
+    XCTAssertEqual(session.sampleTime(in: failed, instance: root), online.time)
+    XCTAssertEqual(session.capture?.time, online.time)
+    let recovered = AgentSnapshot(usages: [inspectorFixture(root)], sampled: true, time: Date(timeIntervalSince1970: 130))
+    session.record(recovered, instance: root)
+    XCTAssertEqual(session.sampleTime(in: recovered, instance: root), recovered.time)
+    let reused = AgentSnapshot(usages: [inspectorFixture(.init(pid: 10, started: 100_000_000))], sampled: true, time: Date(timeIntervalSince1970: 140))
+    session.record(reused, instance: root)
+    XCTAssertEqual(session.sampleTime(in: reused, instance: root), recovered.time)
+}
+
+func testInspectorWindowReleaseAndNavigation() {
+    _ = NSApplication.shared
+    NSApp.setActivationPolicy(.prohibited)
+    let windows = AgentInspectorWindows(limit: 2)
+    let root = AgentProcessID(pid: 10, started: 1)
+    var navigation = AgentInspectorNavigation()
+    navigation.selection = .init(pid: 11, started: 2)
+    navigation.zoom = 1.3; navigation.pan = CGSize(width: 40, height: -20)
+    navigation.query = "worker"; navigation.page = 1; navigation.listMode = true; navigation.expandedGraph = true
+    weak var releasedWindow: NSWindow?
+    weak var releasedController: NSViewController?
+    weak var releasedSession: AgentInspectorSession?
+    autoreleasepool {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: .titled, backing: .buffered, defer: false)
+        let controller = NSViewController(); controller.view = NSView()
+        window.contentViewController = controller
+        let session = AgentInspectorSession(navigation: navigation)
+        releasedWindow = window; releasedController = controller; releasedSession = session
+        windows.insert(window, session: session, for: root)
+        XCTAssertEqual(windows.entries.count, 1)
+        window.close()
+        XCTAssertTrue(windows.entries.isEmpty)
+        XCTAssertNil(window.contentViewController)
+        XCTAssertEqual(windows.navigation(for: root), navigation)
+    }
+    XCTAssertNil(releasedWindow); XCTAssertNil(releasedController); XCTAssertNil(releasedSession)
+    let restored = AgentInspectorSession(navigation: windows.navigation(for: root)!)
+    XCTAssertEqual(restored.navigation, navigation)
+    XCTAssertNil(restored.capture)
+    for pid: Int32 in [20, 30] {
+        let id = AgentProcessID(pid: pid, started: 1)
+        let window = NSWindow(contentRect: .zero, styleMask: .titled, backing: .buffered, defer: false)
+        windows.insert(window, session: AgentInspectorSession(), for: id)
+        window.close()
+    }
+    XCTAssertNil(windows.navigation(for: root)) // Bounded eviction.
+    let remaining = AgentProcessID(pid: 30, started: 1)
+    windows.prune(active: [remaining])
+    XCTAssertNil(windows.navigation(for: .init(pid: 20, started: 1)))
+    XCTAssertTrue(windows.navigation(for: remaining) != nil)
+    windows.closeAll()
+    XCTAssertNil(windows.navigation(for: remaining))
+}
+
 let tests = MetricsTests()
 let agentTests = AgentTests()
 let cases: [(String, () -> Void)] = [
+    ("Inspector selected node / exit and PID reuse", testInspectorSelectedNodeExit),
+    ("Inspector snapshot / frozen time and recovery", testInspectorFrozenSampleTime),
+    ("Inspector windows / release and bounded navigation restore", testInspectorWindowReleaseAndNavigation),
     ("Graph node hit testing / labels and viewport transforms", testGraphNodeHitTesting),
     ("Graph viewport / zoom limits and pan reset", testGraphViewport),
     ("Neural geometry / stable order and bounds", testNeuralGeometry),

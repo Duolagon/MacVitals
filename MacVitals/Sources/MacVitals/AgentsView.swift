@@ -260,18 +260,16 @@ private struct AgentSigil: View {
 struct AgentDetailsView: View {
     @ObservedObject var model: AgentsModel
     let instance: AgentProcessID
+    @ObservedObject var session = AgentInspectorSession()
     var networkWindow = false
-    var initialSelection: AgentProcessID? = nil
     var openNetwork: (AgentProcessID) -> Void = { _ in }
-    @State private var lastKnown: AgentUsage?
-    private var current: AgentUsage? { model.latest.usages.first { $0.id == instance } }
-    private var usage: AgentUsage? { current ?? lastKnown }
-    @State private var selection: AgentProcessID?
-    @State private var expandedGraph = false
+    private var current: AgentUsage? { model.latest.available ? model.latest.usages.first { $0.id == instance } : nil }
+    private var usage: AgentUsage? { session.usage(in: model.latest, instance: instance) }
+    private var sampleTime: Date { session.sampleTime(in: model.latest, instance: instance) }
     private var accent: Color { usage?.kind == .claude ? Color(red: 0.72, green: 0.66, blue: 0.93) : Color(red: 0.46, green: 0.73, blue: 0.90) }
     private var selected: AgentProcessUsage? {
         guard let usage else { return nil }
-        return usage.processes.first { $0.id == (selection ?? instance) } ?? usage.processes.first { $0.id == instance } ?? usage.processes.first
+        return session.selected(in: usage, instance: instance)
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -286,11 +284,11 @@ struct AgentDetailsView: View {
                 }.padding(16)
                 Rectangle().fill(accent.opacity(0.2)).frame(height: 1)
                 HStack(spacing: 0) {
-                    AgentNeuralMap(usage: usage, root: instance, selected: selected?.id ?? instance,
-                                   accent: accent, live: current != nil && model.latest.available, expanded: $expandedGraph, standalone: networkWindow, openNetwork: openNetwork,
-                                   select: { selection = $0; expandedGraph = false })
+                    AgentNeuralMap(usage: usage, root: instance, selected: session.navigation.selection ?? instance,
+                                   accent: accent, live: current != nil && model.latest.available, expanded: $session.navigation.expandedGraph, navigation: $session.navigation, standalone: networkWindow, openNetwork: openNetwork,
+                                   select: { session.navigation.selection = $0; session.navigation.expandedGraph = false })
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if !expandedGraph {
+                    if !session.navigation.expandedGraph {
                     Rectangle().fill(Color.white.opacity(0.06)).frame(width: 1)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
@@ -307,10 +305,18 @@ struct AgentDetailsView: View {
                                         .font(.system(size: 25, weight: .light, design: .monospaced)).foregroundStyle(accent).monospacedDigit()
                                 }
                                 processDetails(selected)
+                            } else if let id = session.navigation.selection {
+                                terminalSection("NODE OFFLINE / 节点不可见") {
+                                    row("选中 PID", String(id.pid))
+                                    Text("该节点已退出或已不可读。请选择其他节点继续查看。")
+                                        .font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 10)
+                                    Button("查看根进程") { session.navigation.selection = instance }
+                                        .buttonStyle(.plain).foregroundStyle(accent).padding(.top, 12)
+                                }
                             }
                             terminalSection("实例概览") {
                                 row("启动时间", started(instance.started))
-                                row("运行时长", duration(max(0, model.latest.time.timeIntervalSince1970 - Double(instance.started) / 1e6)))
+                                row("运行时长", duration(max(0, sampleTime.timeIntervalSince1970 - Double(instance.started) / 1e6)))
                                 row("进程 / 可读线程合计", "\(usage.processes.count) / \(usage.processes.compactMap { $0.detail?.threads }.reduce(0, +))")
                                 row("物理足迹合计", sum(usage.processes.compactMap { $0.detail?.footprint }))
                                 row("采样覆盖", usage.partial ? "PARTIAL / 缺失指标或正在建立基线" : "CPU + RSS / 全部成员已覆盖")
@@ -342,10 +348,8 @@ struct AgentDetailsView: View {
                 AgentsStyle.background
                 RadialGradient(colors: [accent.opacity(0.055), .clear], center: .topLeading, startRadius: 0, endRadius: 800)
             }.preferredColorScheme(.dark)
-            .onAppear { if let current { lastKnown = current }; if selection == nil { selection = initialSelection } }
-            .onReceive(model.$latest) { snapshot in
-                if let value = snapshot.usages.first(where: { $0.id == instance }) { lastKnown = value }
-            }
+            .onAppear { session.record(model.latest, instance: instance) }
+            .onReceive(model.$latest) { snapshot in session.record(snapshot, instance: instance) }
     }
     private var header: some View {
         HStack(spacing: 14) {
@@ -359,7 +363,7 @@ struct AgentDetailsView: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 5) {
                 Text(String(format: "%02d", usage?.processes.count ?? 0)).font(.system(size: 27, weight: .light, design: .monospaced)).foregroundStyle(accent)
-                Text("个进程 · " + model.latest.time.formatted(date: .omitted, time: .standard))
+                Text("个进程 · " + (current == nil ? "最后采样 " : "") + sampleTime.formatted(date: .omitted, time: .standard))
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }.padding(20).overlay(alignment: .bottom) { Rectangle().fill(accent.opacity(0.4)).frame(height: 1) }
@@ -530,28 +534,24 @@ private struct AgentNeuralMap: View {
     let accent: Color
     let live: Bool
     @Binding var expanded: Bool
+    @Binding var navigation: AgentInspectorNavigation
     let standalone: Bool
     let openNetwork: (AgentProcessID) -> Void
     let select: (AgentProcessID) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var query = ""
-    @State private var page = 0
     @State private var hovered: AgentProcessID?
-    @State private var listMode = false
-    @State private var zoom: CGFloat = 1
-    @State private var pan: CGSize = .zero
     @GestureState private var drag: CGSize = .zero
     @GestureState private var pinch: CGFloat = 1
-    private var effectiveZoom: CGFloat { AgentGraphViewport.scale(zoom * pinch) }
+    private var effectiveZoom: CGFloat { AgentGraphViewport.scale(navigation.zoom * pinch) }
     private var children: [AgentProcessUsage] { usage.processes.filter { $0.id != root }.sorted { $0.id.pid < $1.id.pid } }
     private var pages: Int { max(1, (children.count + 47) / 48) }
-    private var effectivePage: Int { min(page, pages - 1) }
+    private var effectivePage: Int { min(navigation.page, pages - 1) }
     private var visible: [AgentProcessUsage] {
         let begin = effectivePage * 48
         return usage.processes.filter { $0.id == root } + Array(children.dropFirst(begin).prefix(48))
     }
     private func matches(_ p: AgentProcessUsage) -> Bool {
-        query.isEmpty || "\(p.name) \(p.id.pid) \(p.detail?.executable ?? "") \(p.detail?.entrypoint ?? "")".localizedCaseInsensitiveContains(query)
+        navigation.query.isEmpty || "\(p.name) \(p.id.pid) \(p.detail?.executable ?? "") \(p.detail?.entrypoint ?? "")".localizedCaseInsensitiveContains(navigation.query)
     }
     private func radius(_ p: AgentProcessUsage) -> CGFloat {
         p.id == root ? 47 : CGFloat(7 + min(11, sqrt(Double(p.memory ?? 0) / 1e9) * 9))
@@ -561,16 +561,16 @@ private struct AgentNeuralMap: View {
             HStack {
                 Text("进程网络").font(.system(size: 14, weight: .semibold)).foregroundStyle(accent)
                 Spacer()
-                Button(listMode ? "节点网络" : "进程列表") { listMode.toggle() }.buttonStyle(.plain).foregroundStyle(.secondary)
+                Button(navigation.listMode ? "节点网络" : "进程列表") { navigation.listMode.toggle() }.buttonStyle(.plain).foregroundStyle(.secondary)
                 Button { if standalone { expanded.toggle() } else { openNetwork(selected) } } label: { Image(systemName: standalone ? (expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") : "arrow.up.forward.app") }
                     .buttonStyle(.plain).accessibilityLabel(standalone ? (expanded ? "收起神经图" : "展开神经图") : "在独立窗口查看神经网络").help(standalone ? (expanded ? "恢复详情布局" : "扩大画布") : "打开独立神经网络查看器")
             }.padding(.horizontal, 22).padding(.top, 18)
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(accent)
-                TextField("查找进程、PID 或路径", text: $query).textFieldStyle(.plain)
-                if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain) }
+                TextField("查找进程、PID 或路径", text: $navigation.query).textFieldStyle(.plain)
+                if !navigation.query.isEmpty { Button { navigation.query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain) }
             }.font(.system(size: 11)).padding(11).background(.white.opacity(0.035), in: Capsule()).padding(.horizontal, 22).padding(.top, 14)
-            if listMode || !query.isEmpty {
+            if navigation.listMode || !navigation.query.isEmpty {
                 processList
             } else {
                 graph
@@ -581,9 +581,9 @@ private struct AgentNeuralMap: View {
                 Text("连线 · 父子进程").foregroundStyle(.secondary)
                 Spacer()
                 if pages > 1 {
-                    Button { page = max(0, effectivePage - 1) } label: { Image(systemName: "chevron.left") }.disabled(effectivePage == 0)
+                    Button { navigation.page = max(0, effectivePage - 1) } label: { Image(systemName: "chevron.left") }.disabled(effectivePage == 0)
                     Text("\(effectivePage + 1)/\(pages)")
-                    Button { page = min(pages - 1, effectivePage + 1) } label: { Image(systemName: "chevron.right") }.disabled(effectivePage == pages-1)
+                    Button { navigation.page = min(pages - 1, effectivePage + 1) } label: { Image(systemName: "chevron.right") }.disabled(effectivePage == pages-1)
                 }
             }.font(.system(size: 9)).foregroundStyle(accent.opacity(0.9)).buttonStyle(.plain).padding(.horizontal, 22).padding(.bottom, 12)
             Text(standalone ? "点击节点查看详情 · 拖动移动 · 捏合缩放" : "点击任意节点或空白区域，打开独立神经网络查看器")
@@ -597,12 +597,12 @@ private struct AgentNeuralMap: View {
                     ZStack(alignment: .bottomTrailing) {
                         graphContent(size: geometry.size, positions: positions, labeled: labeled)
                             .scaleEffect(effectiveZoom)
-                            .offset(AgentGraphViewport.offset(CGSize(width: pan.width + drag.width, height: pan.height + drag.height), scale: effectiveZoom, size: geometry.size))
+                            .offset(AgentGraphViewport.offset(CGSize(width: navigation.pan.width + drag.width, height: navigation.pan.height + drag.height), scale: effectiveZoom, size: geometry.size))
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .contentShape(Rectangle())
                             .highPriorityGesture(SpatialTapGesture(coordinateSpace: .named("agentGraphViewport"))
                                 .onEnded { value in
-                                    let offset = AgentGraphViewport.offset(CGSize(width: pan.width + drag.width, height: pan.height + drag.height), scale: effectiveZoom, size: geometry.size)
+                                    let offset = AgentGraphViewport.offset(CGSize(width: navigation.pan.width + drag.width, height: navigation.pan.height + drag.height), scale: effectiveZoom, size: geometry.size)
                                     let radii = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, radius($0)) })
                                     let labels = labeled.union([selected]).union(hovered.map { [$0] } ?? [])
                                     if let hit = AgentGraphHitTest.node(at: value.location, positions: positions, radii: radii, labeled: labels.subtracting([root]), scale: effectiveZoom, offset: offset, size: geometry.size) {
@@ -611,10 +611,10 @@ private struct AgentNeuralMap: View {
                                 })
                             .simultaneousGesture(DragGesture(minimumDistance: 8)
                                 .updating($drag) { value, state, _ in state = value.translation }
-                                .onEnded { value in pan = AgentGraphViewport.offset(CGSize(width: pan.width + value.translation.width, height: pan.height + value.translation.height), scale: effectiveZoom, size: geometry.size) })
+                                .onEnded { value in navigation.pan = AgentGraphViewport.offset(CGSize(width: navigation.pan.width + value.translation.width, height: navigation.pan.height + value.translation.height), scale: effectiveZoom, size: geometry.size) })
                             .simultaneousGesture(MagnificationGesture()
                                 .updating($pinch) { value, state, _ in state = value }
-                                .onEnded { value in zoom = AgentGraphViewport.scale(zoom * value); pan = AgentGraphViewport.offset(pan, scale: zoom, size: geometry.size) })
+                                .onEnded { value in navigation.zoom = AgentGraphViewport.scale(navigation.zoom * value); navigation.pan = AgentGraphViewport.offset(navigation.pan, scale: navigation.zoom, size: geometry.size) })
                             .clipped()
                         zoomControls(size: geometry.size, positions: positions).padding(16)
                     }.coordinateSpace(name: "agentGraphViewport").clipped()
@@ -641,20 +641,20 @@ private struct AgentNeuralMap: View {
         let nextPan: CGSize
         if let focus {
             nextPan = CGSize(width: (size.width / 2 - focus.x) * next, height: (size.height / 2 - focus.y) * next)
-        } else { nextPan = CGSize(width: pan.width * next / zoom, height: pan.height * next / zoom) }
+        } else { nextPan = CGSize(width: navigation.pan.width * next / navigation.zoom, height: navigation.pan.height * next / navigation.zoom) }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
-            zoom = next; pan = AgentGraphViewport.offset(nextPan, scale: next, size: size)
+            navigation.zoom = next; navigation.pan = AgentGraphViewport.offset(nextPan, scale: next, size: size)
         }
     }
     private func zoomControls(size: CGSize, positions: [AgentProcessID: CGPoint]) -> some View {
         HStack(spacing: 14) {
-            Button { changeZoom(zoom - 0.3, size: size) } label: { Image(systemName: "minus.magnifyingglass") }
-                .disabled(zoom <= 1).accessibilityLabel("缩小神经图")
+            Button { changeZoom(navigation.zoom - 0.3, size: size) } label: { Image(systemName: "minus.magnifyingglass") }
+                .disabled(navigation.zoom <= 1).accessibilityLabel("缩小神经图")
             Text("\(Int(effectiveZoom * 100))%").font(.system(size: 11)).monospacedDigit().frame(width: 38)
-            Button { changeZoom(zoom + 0.3, size: size) } label: { Image(systemName: "plus.magnifyingglass") }
-                .disabled(zoom >= 3.5).accessibilityLabel("放大神经图")
+            Button { changeZoom(navigation.zoom + 0.3, size: size) } label: { Image(systemName: "plus.magnifyingglass") }
+                .disabled(navigation.zoom >= 3.5).accessibilityLabel("放大神经图")
             Divider().frame(height: 16)
-            Button { changeZoom(max(1.8, zoom), size: size, focus: positions[selected]) } label: { Image(systemName: "scope") }
+            Button { changeZoom(max(1.8, navigation.zoom), size: size, focus: positions[selected]) } label: { Image(systemName: "scope") }
                 .accessibilityLabel("放大选中节点").help("放大并居中选中的进程")
             Button { changeZoom(1, size: size) } label: { Image(systemName: "arrow.counterclockwise") }
                 .accessibilityLabel("复位神经图").help("恢复 100% 并居中")
@@ -709,7 +709,7 @@ private struct AgentNeuralMap: View {
                 ScrollView {
                     LazyVStack(spacing: 4) {
                         ForEach(usage.processes.filter { matches($0) }.sorted { $0.id.pid < $1.id.pid }) { process in
-                            Button { select(process.id); page = children.firstIndex(where: { $0.id == process.id }).map { $0 / 48 } ?? 0; query = ""; listMode = false } label: {
+                            Button { select(process.id); navigation.page = children.firstIndex(where: { $0.id == process.id }).map { $0 / 48 } ?? 0; navigation.query = ""; navigation.listMode = false } label: {
                                 HStack {
                                     Circle().fill(accent).frame(width: 5, height: 5)
                                     Text(process.name).lineLimit(1)
