@@ -288,7 +288,7 @@ struct AgentDetailsView: View {
                 HStack(spacing: 0) {
                     AgentNeuralMap(usage: usage, root: instance, selected: selected?.id ?? instance,
                                    accent: accent, live: current != nil && model.latest.available, expanded: $expandedGraph, standalone: networkWindow, openNetwork: openNetwork,
-                                   select: { selection = $0 })
+                                   select: { selection = $0; expandedGraph = false })
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if !expandedGraph {
                     Rectangle().fill(Color.white.opacity(0.06)).frame(width: 1)
@@ -501,6 +501,28 @@ enum AgentGraphViewport {
     }
 }
 
+/// Hit testing uses the same viewport transform as drawing, including label targets.
+enum AgentGraphHitTest {
+    static func node(at location: CGPoint, positions: [AgentProcessID: CGPoint], radii: [AgentProcessID: CGFloat], labeled: Set<AgentProcessID>, scale: CGFloat, offset: CGSize, size: CGSize) -> AgentProcessID? {
+        let zoom = AgentGraphViewport.scale(scale)
+        let point = CGPoint(x: (location.x - size.width / 2 - offset.width) / zoom + size.width / 2,
+                            y: (location.y - size.height / 2 - offset.height) / zoom + size.height / 2)
+        let nearest = positions.sorted { a, b in
+            let da = hypot(a.value.x-point.x, a.value.y-point.y), db = hypot(b.value.x-point.x, b.value.y-point.y)
+            return da == db ? a.key.pid < b.key.pid : da < db
+        }
+        for (id, center) in nearest {
+            let radius = radii[id] ?? 10
+            if hypot(center.x-point.x, center.y-point.y) <= max(radius + 6, 22 / zoom) { return id }
+        }
+        for (id, center) in nearest where labeled.contains(id) {
+            let y = center.y + (radii[id] ?? 10) + 24
+            if CGRect(x: center.x - 62, y: y - 20, width: 124, height: 40).contains(point) { return id }
+        }
+        return nil
+    }
+}
+
 private struct AgentNeuralMap: View {
     let usage: AgentUsage
     let root: AgentProcessID
@@ -578,6 +600,15 @@ private struct AgentNeuralMap: View {
                             .offset(AgentGraphViewport.offset(CGSize(width: pan.width + drag.width, height: pan.height + drag.height), scale: effectiveZoom, size: geometry.size))
                             .frame(width: geometry.size.width, height: geometry.size.height)
                             .contentShape(Rectangle())
+                            .highPriorityGesture(SpatialTapGesture(coordinateSpace: .named("agentGraphViewport"))
+                                .onEnded { value in
+                                    let offset = AgentGraphViewport.offset(CGSize(width: pan.width + drag.width, height: pan.height + drag.height), scale: effectiveZoom, size: geometry.size)
+                                    let radii = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, radius($0)) })
+                                    let labels = labeled.union([selected]).union(hovered.map { [$0] } ?? [])
+                                    if let hit = AgentGraphHitTest.node(at: value.location, positions: positions, radii: radii, labeled: labels.subtracting([root]), scale: effectiveZoom, offset: offset, size: geometry.size) {
+                                        select(hit); if !standalone { openNetwork(hit) }
+                                    } else if !standalone { openNetwork(selected) }
+                                })
                             .simultaneousGesture(DragGesture(minimumDistance: 8)
                                 .updating($drag) { value, state, _ in state = value.translation }
                                 .onEnded { value in pan = AgentGraphViewport.offset(CGSize(width: pan.width + value.translation.width, height: pan.height + value.translation.height), scale: effectiveZoom, size: geometry.size) })
@@ -586,7 +617,7 @@ private struct AgentNeuralMap: View {
                                 .onEnded { value in zoom = AgentGraphViewport.scale(zoom * value); pan = AgentGraphViewport.offset(pan, scale: zoom, size: geometry.size) })
                             .clipped()
                         zoomControls(size: geometry.size, positions: positions).padding(16)
-                    }.clipped()
+                    }.coordinateSpace(name: "agentGraphViewport").clipped()
                 }
     }
     private func graphContent(size: CGSize, positions: [AgentProcessID: CGPoint], labeled: Set<AgentProcessID>) -> some View {
@@ -715,7 +746,7 @@ private struct AgentNeuralMap: View {
                         Text("ROOT").font(.system(size: 7, design: .monospaced)).tracking(2).foregroundStyle(.secondary)
                     }.frame(width: 92, height: 92)
                 } else {
-                    Color.clear.frame(width: max(30, radius(p)*2 + 8), height: max(30, radius(p)*2 + 8)).contentShape(Circle())
+                    Circle().fill(Color.white.opacity(0.001)).frame(width: max(44, radius(p)*2 + 12), height: max(44, radius(p)*2 + 12)).contentShape(Circle())
                 }
             }
         }.buttonStyle(.plain)

@@ -228,9 +228,27 @@ func testGraphViewport() {
     XCTAssertEqual(AgentGraphViewport.offset(CGSize(width: CGFloat.nan, height: CGFloat.infinity), scale: 2, size: size), .zero)
 }
 
+func testGraphNodeHitTesting() {
+    let root = AgentProcessID(pid: 1, started: 1), child = AgentProcessID(pid: 2, started: 1)
+    let size = CGSize(width: 600, height: 400)
+    let positions = [root: CGPoint(x: 300, y: 200), child: CGPoint(x: 400, y: 240)]
+    let radii: [AgentProcessID: CGFloat] = [root: 47, child: 10]
+    func hit(_ point: CGPoint, zoom: CGFloat = 1, offset: CGSize = .zero) -> AgentProcessID? {
+        AgentGraphHitTest.node(at: point, positions: positions, radii: radii, labeled: [child], scale: zoom, offset: offset, size: size)
+    }
+    XCTAssertEqual(hit(CGPoint(x: 300, y: 200)), root)
+    XCTAssertEqual(hit(CGPoint(x: 418, y: 240)), child)
+    XCTAssertEqual(hit(CGPoint(x: 445, y: 274)), child)
+    XCTAssertNil(hit(CGPoint(x: 20, y: 20)))
+    XCTAssertEqual(hit(CGPoint(x: 460, y: 310), zoom: 2, offset: CGSize(width: -40, height: 30)), child)
+    XCTAssertEqual(hit(CGPoint(x: 550, y: 378), zoom: 2, offset: CGSize(width: -40, height: 30)), child)
+    XCTAssertNil(hit(CGPoint(x: 20, y: 20), zoom: 2, offset: CGSize(width: -40, height: 30)))
+}
+
 let tests = MetricsTests()
 let agentTests = AgentTests()
 let cases: [(String, () -> Void)] = [
+    ("Graph node hit testing / labels and viewport transforms", testGraphNodeHitTesting),
     ("Graph viewport / zoom limits and pan reset", testGraphViewport),
     ("Neural geometry / stable order and bounds", testNeuralGeometry),
     ("Agent recognition / false positives", agentTests.testRecognition),
