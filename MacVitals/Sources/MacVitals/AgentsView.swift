@@ -14,12 +14,12 @@ final class AgentsModel: ObservableObject {
     }
 }
 enum AgentsStyle {
-    static let background = Color(red: 0.055, green: 0.065, blue: 0.085)
-    static let card = Color(red: 0.095, green: 0.108, blue: 0.135)
+    static let background = Color(red: 0.018, green: 0.032, blue: 0.043)
+    static let card = Color(red: 0.035, green: 0.062, blue: 0.078)
     static let cyan = Color(red: 0.38, green: 0.76, blue: 1)
     static let purple = Color(red: 0.74, green: 0.62, blue: 1)
     static let green = Color(red: 0.38, green: 0.86, blue: 0.72)
-    static var height: CGFloat { min(680, max(480, (NSScreen.main?.visibleFrame.height ?? 850) - 70)) }
+    static var height: CGFloat { min(820, max(480, (NSScreen.main?.visibleFrame.height ?? 850) - 70)) }
 }
 struct AgentsView: View {
     @ObservedObject var model: AgentsModel
@@ -29,24 +29,25 @@ struct AgentsView: View {
     private var cores: Double { Double(max(1, ProcessInfo.processInfo.activeProcessorCount)) }
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 11) {
-                Image(systemName: "terminal").font(.system(size: 22)).foregroundStyle(AgentsStyle.cyan)
-                    .frame(width: 40, height: 40).background(AgentsStyle.cyan.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Agent Monitor").font(.system(size: 19, weight: .semibold))
-                    Text("LOCAL PROCESS TELEMETRY").font(.system(size: 9, design: .monospaced)).tracking(0.8).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                AgentSigil(seed: 0, color: AgentsStyle.cyan).frame(width: 42, height: 42)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("AGENT // NEXUS").font(.system(size: 18, weight: .bold, design: .monospaced)).tracking(1)
+                    Text("LOCAL TELEMETRY / PROCESS LINK").font(.system(size: 8, design: .monospaced)).tracking(1.2).foregroundStyle(AgentsStyle.cyan.opacity(0.7))
                 }
                 Spacer()
-                Text("\(model.latest.usages.count) 实例").font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 9).padding(.vertical, 5).background(Color.white.opacity(0.05), in: Capsule())
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(String(format: "%02d", model.latest.usages.count)).font(.system(size: 25, weight: .light, design: .monospaced)).foregroundStyle(AgentsStyle.green)
+                    Text("NODES").font(.system(size: 8, design: .monospaced)).tracking(2).foregroundStyle(.secondary)
+                }
             }.padding(18)
-            Divider().opacity(0.3)
+            Rectangle().fill(AgentsStyle.cyan.opacity(0.3)).frame(height: 1)
             ScrollView {
                 VStack(alignment: .leading, spacing: 13) {
                     if model.latest.sampled && model.latest.available {
                         HStack(spacing: 12) {
-                            summary("CPU 合计", value: cpu(model.latest.totalCPU), color: AgentsStyle.cyan)
-                            summary("驻留内存合计", value: model.latest.totalMemory.map { MetricsFormat.bytes($0) } ?? "—", color: AgentsStyle.purple)
+                            summary("Σ CPU / COMPUTE", value: cpu(model.latest.totalCPU), color: AgentsStyle.cyan)
+                            summary("Σ RSS / MEMORY", value: model.latest.totalMemory.map { MetricsFormat.bytes($0) } ?? "—", color: AgentsStyle.purple)
                         }
                     }
                     if !model.latest.sampled {
@@ -75,7 +76,20 @@ struct AgentsView: View {
                     .font(.system(size: 9)).foregroundStyle(.secondary)
             }.padding(.horizontal, 18).padding(.vertical, 12)
                 .overlay(alignment: .top) { Rectangle().fill(Color.white.opacity(0.07)).frame(height: 1) }
-        }.frame(width: 440, height: AgentsStyle.height).background(AgentsStyle.background).preferredColorScheme(.dark)
+        }.frame(width: 440, height: AgentsStyle.height)
+            .background {
+                AgentsStyle.background
+                Canvas { context, size in
+                    for y in stride(from: CGFloat(0), to: size.height, by: 4) {
+                        context.fill(Path(CGRect(x: 0, y: y, width: size.width, height: 1)), with: .color(.white.opacity(0.015)))
+                    }
+                    for x in stride(from: CGFloat(0), to: size.width, by: 20) {
+                        for y in stride(from: CGFloat(0), to: size.height, by: 20) {
+                            context.fill(Path(CGRect(x: x, y: y, width: 1, height: 1)), with: .color(AgentsStyle.cyan.opacity(0.12)))
+                        }
+                    }
+                }.allowsHitTesting(false).accessibilityHidden(true)
+            }.preferredColorScheme(.dark)
     }
     private func cpu(_ value: Double?) -> String { value.map { String(format: "%.1f%%", $0) } ?? "采样中" }
     private func summary(_ title: String, value: String, color: Color) -> some View {
@@ -84,7 +98,7 @@ struct AgentsView: View {
             Text(value).font(.system(size: 21, weight: .medium, design: .monospaced)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
             Rectangle().fill(color.opacity(0.55)).frame(height: 2)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
-            .background(AgentsStyle.card, in: RoundedRectangle(cornerRadius: 12))
+            .background(AgentsStyle.card, in: RoundedRectangle(cornerRadius: 3))
     }
     private func empty(_ title: String, detail: String, icon: String) -> some View {
         VStack(spacing: 12) {
@@ -94,12 +108,15 @@ struct AgentsView: View {
         }.frame(maxWidth: .infinity).padding(.vertical, 55).padding(.horizontal, 24)
     }
     private func agentCard(_ usage: AgentUsage) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                RoundedRectangle(cornerRadius: 2).fill(AgentsStyle.green).frame(width: 5, height: 13)
-                Text(usage.kind.rawValue).font(.system(size: 14, weight: .semibold))
+                AgentSigil(seed: AgentKind.allCases.firstIndex(of: usage.kind) ?? 0, color: accent(usage)).frame(width: 32, height: 32)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(usage.kind.rawValue.uppercased()).font(.system(size: 14, weight: .bold, design: .monospaced)).tracking(1)
+                    Text("PROCESS LINK / DETECTED").font(.system(size: 8, design: .monospaced)).tracking(0.8).foregroundStyle(accent(usage))
+                }
                 Spacer()
-                Text("PID \(usage.id.pid)").font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                Text("#\(String(usage.id.pid))").font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
             }
             HStack(spacing: 18) {
                 meter("CPU", value: cpu(usage.cpu), detail: usage.cpu.map { String(format: "整机 %.1f%%", $0 / cores) } ?? "建立采样基线",
@@ -107,7 +124,13 @@ struct AgentsView: View {
                 meter("内存", value: usage.memory.map { MetricsFormat.bytes($0) } ?? "不可读", detail: "进程 RSS 合计",
                       fraction: usage.memory.map { Double($0) / Double(totalMemory) }, color: AgentsStyle.purple)
             }
+            HStack {
+                Text("CPU / 120s TRACE").tracking(1)
+                Spacer()
+                Text("→ NOW")
+            }.font(.system(size: 8, design: .monospaced)).foregroundStyle(accent(usage).opacity(0.8))
             historyStrip(usage)
+            processBus(usage)
             HStack {
                 Text("磁盘 ↓ " + MetricsFormat.rate(usage.readRate))
                 Spacer()
@@ -133,8 +156,10 @@ struct AgentsView: View {
                     if usage.partial { Text(usage.cpu == nil ? "采样中" : "部分采样").font(.system(size: 9)).foregroundStyle(.secondary) }
                 }
             }.tint(AgentsStyle.cyan)
-        }.padding(14).background(AgentsStyle.card, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.075), lineWidth: 1))
+        }.padding(14)
+            .overlay(alignment: .topLeading) { Rectangle().fill(accent(usage)).frame(width: 28, height: 2) }
+            .background(AgentsStyle.card, in: RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(accent(usage).opacity(0.3), lineWidth: 1))
     }
     private func meter(_ title: String, value: String, detail: String, fraction: Double?, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -150,19 +175,70 @@ struct AgentsView: View {
             Text(detail).font(.system(size: 9)).foregroundStyle(.secondary)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
+    private func accent(_ usage: AgentUsage) -> Color {
+        usage.kind == .claude ? AgentsStyle.purple : AgentsStyle.cyan
+    }
+    private func processBus(_ usage: AgentUsage) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "cpu").foregroundStyle(accent(usage))
+            Rectangle().fill(accent(usage).opacity(0.35)).frame(width: 16, height: 1)
+            Canvas { context, size in
+                let count = min(24, usage.processes.count)
+                for index in 0..<count {
+                    let x = CGFloat(index) * size.width / CGFloat(max(1, count))
+                    context.fill(Path(CGRect(x: x, y: 3, width: 4, height: 4)), with: .color(accent(usage).opacity(0.75)))
+                }
+            }.frame(height: 10).accessibilityHidden(true)
+            Text("\(usage.processes.count) PROC").font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+        }.help("进程集合；每个点代表一个进程，最多显示 24 个")
+    }
     private func historyStrip(_ usage: AgentUsage) -> some View {
         Canvas { context, size in
-            let width = (size.width - 31 * 2) / 32
+            let columns = 48, rows = 8
+            let cellWidth = size.width / CGFloat(columns)
+            let cellHeight = size.height / CGFloat(rows)
             let start = model.latest.time.addingTimeInterval(-120)
-            for index in 0..<32 {
-                let lower = start.addingTimeInterval(Double(index) * 120 / 32)
-                let upper = lower.addingTimeInterval(120.0 / 32)
-                let values = model.history.filter { $0.time >= lower && $0.time <= upper }
+            for index in 0..<columns {
+                let lower = start.addingTimeInterval(Double(index) * 2.5)
+                let upper = lower.addingTimeInterval(2.5)
+                let values = model.history.filter { $0.time >= lower && $0.time < upper }
                     .compactMap { $0.snapshot.usages.first { $0.id == usage.id }?.cpu }
                 let mean = values.isEmpty ? nil : values.reduce(0, +) / Double(values.count)
-                let rect = CGRect(x: CGFloat(index) * (width + 2), y: 0, width: width, height: size.height)
-                context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(mean.map { AgentsStyle.cyan.opacity(0.15 + min(1, $0 / (cores * 100)) * 0.85) } ?? .white.opacity(0.035)))
+                // Logarithmic display retains small loads; raw CPU remains above.
+                let level = mean.map { min(1, log1p(max(0, $0)) / log1p(cores * 100)) }
+                for row in 0..<rows {
+                    let lit = level.map { $0 > Double(rows - 1 - row) / Double(rows) } ?? false
+                    let rect = CGRect(x: CGFloat(index) * cellWidth, y: CGFloat(row) * cellHeight, width: max(1, cellWidth - 2), height: cellHeight - 2)
+                    context.fill(Path(rect), with: .color(lit ? accent(usage).opacity(0.3 + Double(row) * 0.08) : .white.opacity(0.035)))
+                }
             }
-        }.frame(height: 5).help("最近 2 分钟 CPU 采样强度，亮度按整机占用计算")
+        }.frame(height: 32).help("最近 2 分钟 CPU 点阵历史，采用对数刻度；上方显示真实 CPU 百分比")
+    }
+}
+
+/// Stable geometric identity; no fabricated activity or task state.
+private struct AgentSigil: View {
+    let seed: Int
+    let color: Color
+    var body: some View {
+        Canvas { context, size in
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let radius = min(size.width, size.height) * 0.43
+            var outer = Path()
+            for i in 0...6 {
+                let angle = Double(i) * .pi / 3 - .pi / 2
+                let point = CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)
+                if i == 0 { outer.move(to: point) } else { outer.addLine(to: point) }
+            }
+            context.stroke(outer, with: .color(color.opacity(0.65)), lineWidth: 1)
+            for i in 0..<6 {
+                let angle = Double(i) * .pi / 3 - .pi / 2
+                let point = CGPoint(x: center.x + cos(angle) * radius * 0.65, y: center.y + sin(angle) * radius * 0.65)
+                var spoke = Path(); spoke.move(to: center); spoke.addLine(to: point)
+                context.stroke(spoke, with: .color(color.opacity(i % 2 == seed % 2 ? 0.7 : 0.2)), lineWidth: 1)
+                context.fill(Path(CGRect(x: point.x - 1.5, y: point.y - 1.5, width: 3, height: 3)), with: .color(color))
+            }
+            context.fill(Path(CGRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6)), with: .color(color))
+        }.accessibilityHidden(true)
     }
 }
