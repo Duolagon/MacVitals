@@ -51,7 +51,7 @@ struct AgentSnapshot {
 }
 enum AgentRecognition {
     static func kind(executable: String, entrypoint: String) -> AgentKind? {
-        let name = URL(fileURLWithPath: executable).lastPathComponent.lowercased()
+        let name = (executable as NSString).lastPathComponent.lowercased()
         switch name {
         case "codex": return .codex
         case "claude", "claude.exe": return .claude
@@ -64,7 +64,7 @@ enum AgentRecognition {
         if name == "agent" && executable.contains("/cursor-agent/") { return .cursor }
         guard name == "node" || name == "nodejs" || name.hasPrefix("python") else { return nil }
         let script = entrypoint.lowercased()
-        let leaf = URL(fileURLWithPath: script).lastPathComponent
+        let leaf = (script as NSString).lastPathComponent
         if script.contains("/node_modules/@openai/codex/") { return .codex }
         if script.contains("/node_modules/@anthropic-ai/claude-code/") { return .claude }
         if script.contains("/node_modules/@google/gemini-cli/") { return .gemini }
@@ -90,57 +90,68 @@ final class AgentMonitor {
     private var previous: [AgentProcessID: UInt64] = [:]
     private var io = CounterTracker()
     private var lastTime: TimeInterval?
-    func sample(desktops: [Int32: AgentKind]) -> AgentSnapshot {
-        var buffer = [MVAgentProcess](repeating: MVAgentProcess(), count: 4096)
-        let count = mv_agent_processes(&buffer, Int32(buffer.count))
-        guard count >= 0 else {
-            previous = [:]; io = CounterTracker(); lastTime = nil
+    private struct CachedMetadata {
+        let observedName: String
+        let metadata: AgentProcessMetadata
+        let kind: AgentKind?
+        let refreshEveryScan: Bool
+        let refreshedAt: TimeInterval
+    }
+    private let source: AgentProcessSource
+    private var metadataCache: [AgentProcessID: CachedMetadata] = [:]
+    private(set) var discoveryCount = 0
+    private(set) var metadataReadCount = 0
+    private(set) var resourceReadCount = 0
+    init(source: AgentProcessSource = NativeAgentProcessSource()) { self.source = source }
+
+    func sample(desktops: [Int32: AgentKind], uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> AgentSnapshot {
+        metadataReadCount = 0; resourceReadCount = 0; discoveryCount = 0
+        guard let identities = source.discover() else {
+            previous = [:]; io = CounterTracker(); lastTime = nil; metadataCache.removeAll()
             return AgentSnapshot(available: false, sampled: true)
         }
-        let readings = buffer.prefix(Int(count)).map { raw -> AgentProcessReading in
-            var p = raw
-            func string<T>(_ x: inout T) -> String {
-                withUnsafePointer(to: &x) { $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout<T>.size) { String(cString: $0) } }
+        discoveryCount = identities.count
+        let live = Set(identities.map { $0.id })
+        metadataCache = metadataCache.filter { live.contains($0.key) }
+        var matches: [Int32: AgentKind] = [:]
+        for identity in identities {
+            let old = metadataCache[identity.id]
+            // Interpreters may exec a different script while keeping PID and start time.
+            // Refresh their entrypoint every scan so recognition remains immediate.
+            if old == nil || old?.observedName != identity.name || old?.refreshEveryScan == true || uptime - (old?.refreshedAt ?? uptime) >= 30 {
+                metadataReadCount += 1
+                if let metadata = source.metadata(for: identity) {
+                    let kind = old?.metadata == metadata ? old?.kind : AgentRecognition.kind(executable: metadata.executable, entrypoint: metadata.entrypoint)
+                    metadataCache[identity.id] = CachedMetadata(observedName: identity.name, metadata: metadata, kind: kind, refreshEveryScan: metadata.interpreter || (metadata.executable as NSString).lastPathComponent.lowercased() == "agent", refreshedAt: uptime)
+                } else { metadataCache.removeValue(forKey: identity.id) }
             }
-            return .init(pid: p.pid, parent: p.parent, started: p.started,
-                         name: string(&p.name), executable: string(&p.executable), entrypoint: string(&p.entrypoint),
-                         cpuNanoseconds: p.readable != 0 ? p.cpu_ns : nil, memory: p.readable != 0 ? p.resident : nil,
-                         readBytes: p.readable != 0 ? p.read_bytes : nil, writtenBytes: p.readable != 0 ? p.written_bytes : nil,
-                         detail: .init(parent: p.parent, uid: p.uid, status: p.status,
-                            executable: string(&p.executable), entrypoint: string(&p.entrypoint),
-                            threads: p.task_readable != 0 ? p.threads : nil, runningThreads: p.task_readable != 0 ? p.running_threads : nil,
-                            priority: p.task_readable != 0 ? p.priority : nil, virtualBytes: p.task_readable != 0 ? p.virtual_bytes : nil,
-                            footprint: p.readable != 0 ? p.footprint : nil, userNS: p.readable != 0 ? p.user_ns : nil, systemNS: p.readable != 0 ? p.system_ns : nil,
-                            faults: p.task_readable != 0 ? p.faults : nil, pageins: p.task_readable != 0 ? p.pageins : nil, switches: p.task_readable != 0 ? p.switches : nil,
-                            readBytes: p.readable != 0 ? p.read_bytes : nil, writtenBytes: p.readable != 0 ? p.written_bytes : nil))
+            if let kind = desktops[identity.id.pid] ?? metadataCache[identity.id]?.kind { matches[identity.id.pid] = kind }
         }
-        return aggregate(readings, desktops: desktops, uptime: ProcessInfo.processInfo.systemUptime)
+        let parents = Dictionary(uniqueKeysWithValues: identities.map { ($0.id.pid, $0.parent) })
+        let roots = AgentOwnership.roots(parents: parents, matches: matches)
+        var readings: [AgentProcessReading] = []
+        for identity in identities where AgentOwnership.owner(of: identity.id.pid, parents: parents, roots: roots) != nil {
+            resourceReadCount += 1
+            let metadata = metadataCache[identity.id]?.metadata ?? .init(name: identity.name, executable: "", entrypoint: "")
+            if let reading = source.resources(for: identity, metadata: metadata) { readings.append(reading) }
+        }
+        return aggregate(readings, uptime: uptime, recognized: matches)
     }
-    func aggregate(_ readings: [AgentProcessReading], desktops: [Int32: AgentKind] = [:], uptime: TimeInterval) -> AgentSnapshot {
+    func aggregate(_ readings: [AgentProcessReading], desktops: [Int32: AgentKind] = [:], uptime: TimeInterval, recognized: [Int32: AgentKind]? = nil) -> AgentSnapshot {
         let elapsed = lastTime.map { uptime - $0 }; lastTime = uptime
         let byPID = Dictionary(uniqueKeysWithValues: readings.map { ($0.pid, $0) })
+        let parents = Dictionary(uniqueKeysWithValues: readings.map { ($0.pid, $0.parent) })
         var matches: [Int32: AgentKind] = [:]
         for p in readings {
-            if let kind = desktops[p.pid] ?? AgentRecognition.kind(executable: p.executable, entrypoint: p.entrypoint) { matches[p.pid] = kind }
+            let kind: AgentKind?
+            if let recognized { kind = recognized[p.pid] }
+            else { kind = desktops[p.pid] ?? AgentRecognition.kind(executable: p.executable, entrypoint: p.entrypoint) }
+            if let kind { matches[p.pid] = kind }
         }
-        var roots = matches
-        for (pid, kind) in matches {
-            var parent = byPID[pid]?.parent ?? 0, visited: Set<Int32> = [pid]
-            while parent > 0 && visited.insert(parent).inserted {
-                if let ancestor = matches[parent] {
-                    if ancestor == kind { roots.removeValue(forKey: pid) }
-                    break
-                }
-                parent = byPID[parent]?.parent ?? 0
-            }
-        }
+        let roots = AgentOwnership.roots(parents: parents, matches: matches)
         var groups: [Int32: [AgentProcessReading]] = [:]
         for p in readings {
-            var pid = p.pid, visited: Set<Int32> = []
-            while pid > 0 && visited.insert(pid).inserted {
-                if roots[pid] != nil { groups[pid, default: []].append(p); break }
-                pid = byPID[pid]?.parent ?? 0
-            }
+            if let owner = AgentOwnership.owner(of: p.pid, parents: parents, roots: roots) { groups[owner, default: []].append(p) }
         }
         var cpu: [AgentProcessID: Double] = [:], next: [AgentProcessID: UInt64] = [:]
         var counters: [String: ByteCounters] = [:]

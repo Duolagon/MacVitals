@@ -332,9 +332,170 @@ func testInspectorWindowReleaseAndNavigation() {
     XCTAssertNil(windows.navigation(for: remaining))
 }
 
+func testSlowMetricCadence() {
+    var diskCalls = 0, batteryCalls = 0, available: UInt64 = 1000
+    var readable = true
+    let monitor = Monitor(diskReader: {
+        diskCalls += 1
+        return readable ? .init(available: available, total: 2000) : nil
+    }, batteryReader: {
+        batteryCalls += 1
+        return readable ? .init(percent: 75, charging: true, description: "75%") : nil
+    })
+    let first = monitor.sample(uptime: 0)
+    XCTAssertEqual(first.diskAvailableBytes, 1000); XCTAssertEqual(first.batteryPercent, 75)
+    available = 900
+    for time: Double in [2, 4, 6, 8, 10, 12, 14] {
+        let sample = monitor.sample(uptime: time)
+        XCTAssertEqual(sample.diskAvailableBytes, 1000)
+        XCTAssertTrue(sample.memoryPercent != nil)
+    }
+    XCTAssertEqual(diskCalls, 1); XCTAssertEqual(batteryCalls, 1)
+    XCTAssertEqual(monitor.sample(uptime: 16).diskAvailableBytes, 900)
+    XCTAssertEqual(diskCalls, 2)
+    available = 800
+    XCTAssertEqual(monitor.sample(uptime: 18, forceSlow: true).diskAvailableBytes, 800)
+    XCTAssertEqual(diskCalls, 3); XCTAssertEqual(batteryCalls, 3)
+    _ = monitor.sample(uptime: 20); XCTAssertEqual(diskCalls, 3)
+    readable = false
+    let failed = monitor.sample(uptime: 34)
+    XCTAssertNil(failed.diskAvailableBytes); XCTAssertNil(failed.batteryPercent)
+    readable = true
+    XCTAssertEqual(monitor.sample(uptime: 36, forceSlow: true).diskAvailableBytes, 800)
+    var cadence = SampleCadence(interval: 15)
+    XCTAssertTrue(cadence.shouldRefresh(at: 20))
+    XCTAssertTrue(!cadence.shouldRefresh(at: 21))
+    XCTAssertTrue(cadence.shouldRefresh(at: 10)) // Clock reset must not stall refresh.
+    XCTAssertTrue(!cadence.shouldRefresh(at: .nan))
+}
+
+func testDetailsSamplingLifecycle() {
+    var gate = DetailSamplingGate()
+    XCTAssertNil(gate.begin())
+    XCTAssertTrue(gate.resume()); XCTAssertTrue(!gate.resume())
+    let first = gate.begin()!; XCTAssertNil(gate.begin())
+    gate.pause(); XCTAssertNil(gate.begin())
+    XCTAssertTrue(!gate.finish(first)) // Closing drops an in-flight result.
+    XCTAssertTrue(gate.resume())
+    let second = gate.begin()!
+    gate.pause(); XCTAssertTrue(gate.resume()) // Reopened before the old job finished.
+    XCTAssertNil(gate.begin())
+    XCTAssertTrue(!gate.finish(second))
+    let third = gate.begin()!
+    XCTAssertTrue(third != second)
+    XCTAssertTrue(!gate.finish(second)); XCTAssertNil(gate.begin())
+    XCTAssertTrue(gate.finish(third))
+    let fourth = gate.begin()!; XCTAssertTrue(gate.finish(fourth))
+}
+
+final class FakeAgentSource: AgentProcessSource {
+    var identities: [AgentProcessIdentity] = []
+    var paths: [AgentProcessID: AgentProcessMetadata] = [:]
+    var readable = true
+    var cpu: UInt64 = 0
+    var metadataCalls: [AgentProcessID] = []
+    var resourceCalls: [AgentProcessID] = []
+    func discover() -> [AgentProcessIdentity]? { readable ? identities : nil }
+    func metadata(for identity: AgentProcessIdentity) -> AgentProcessMetadata? {
+        metadataCalls.append(identity.id); return paths[identity.id]
+    }
+    func resources(for identity: AgentProcessIdentity, metadata: AgentProcessMetadata) -> AgentProcessReading? {
+        resourceCalls.append(identity.id)
+        return .init(pid: identity.id.pid, parent: identity.parent, started: identity.id.started,
+                     name: metadata.name, executable: metadata.executable, entrypoint: metadata.entrypoint,
+                     cpuNanoseconds: cpu, memory: 100, readBytes: cpu, writtenBytes: cpu)
+    }
+    func add(_ pid: Int32, parent: Int32 = 0, started: UInt64 = 1, name: String, executable: String, entrypoint: String = "") -> AgentProcessID {
+        let id = AgentProcessID(pid: pid, started: started)
+        identities.append(.init(id: id, parent: parent, uid: 501, status: 2, name: name))
+        paths[id] = .init(name: name, executable: executable, entrypoint: entrypoint)
+        return id
+    }
+}
+
+func testAgentSelectiveResourcesAndCache() {
+    let source = FakeAgentSource()
+    let root = source.add(10, name: "codex", executable: "/bin/codex")
+    let child = source.add(11, parent: 10, name: "worker", executable: "/bin/worker")
+    let unrelated = source.add(20, name: "worker", executable: "/bin/worker")
+    let monitor = AgentMonitor(source: source)
+    let first = monitor.sample(desktops: [:], uptime: 1)
+    XCTAssertEqual(first.usages.count, 1); XCTAssertEqual(first.usages[0].processes.count, 2)
+    XCTAssertEqual(Set(source.resourceCalls), [root, child])
+    XCTAssertTrue(!source.resourceCalls.contains(unrelated))
+    XCTAssertEqual(monitor.discoveryCount, 3); XCTAssertEqual(monitor.resourceReadCount, 2)
+    XCTAssertEqual(monitor.metadataReadCount, 3)
+    source.cpu = 200_000_000; source.metadataCalls.removeAll(); source.resourceCalls.removeAll()
+    let next = monitor.sample(desktops: [:], uptime: 3)
+    XCTAssertEqual(monitor.metadataReadCount, 0); XCTAssertTrue(source.metadataCalls.isEmpty)
+    XCTAssertEqual(next.usages[0].cpu ?? -1, 20, accuracy: 0.001)
+    XCTAssertEqual(next.usages[0].readRate ?? -1, 200_000_000, accuracy: 1)
+    let newRoot = source.add(30, name: "claude", executable: "/bin/claude")
+    XCTAssertEqual(monitor.sample(desktops: [:], uptime: 5).usages.count, 2)
+    XCTAssertEqual(source.metadataCalls, [newRoot]) // Discovery is never slowed down.
+    source.identities.removeAll { $0.id == root || $0.id == child }
+    source.resourceCalls.removeAll()
+    XCTAssertEqual(monitor.sample(desktops: [:], uptime: 7).usages.count, 1)
+    XCTAssertEqual(source.resourceCalls, [newRoot])
+    let reused = source.add(10, started: 2, name: "worker", executable: "/bin/worker")
+    source.metadataCalls.removeAll()
+    XCTAssertEqual(monitor.sample(desktops: [:], uptime: 9).usages.count, 1)
+    XCTAssertTrue(source.metadataCalls.contains(reused))
+    source.readable = false
+    XCTAssertTrue(!monitor.sample(desktops: [:], uptime: 11).available)
+    source.readable = true
+    let recovered = monitor.sample(desktops: [:], uptime: 13)
+    XCTAssertNil(recovered.usages[0].cpu)
+    source.metadataCalls.removeAll()
+    _ = monitor.sample(desktops: [:], uptime: 45)
+    XCTAssertTrue(source.metadataCalls.contains(newRoot)) // Stable paths also refresh periodically.
+}
+
+func testAgentExecAndInterpreterRefresh() {
+    let source = FakeAgentSource()
+    let interpreter = source.add(10, name: "node", executable: "/bin/node", entrypoint: "/tmp/ordinary.js")
+    let native = source.add(20, name: "ordinary", executable: "/bin/ordinary")
+    let monitor = AgentMonitor(source: source)
+    XCTAssertTrue(monitor.sample(desktops: [:], uptime: 1).usages.isEmpty)
+    source.paths[interpreter] = .init(name: "node", executable: "/bin/node", entrypoint: "/usr/node_modules/@google/gemini-cli/index.js")
+    let changed = monitor.sample(desktops: [:], uptime: 3)
+    XCTAssertEqual(changed.usages.first?.kind, .gemini)
+    source.paths[interpreter] = .init(name: "node", executable: "/bin/node", entrypoint: "/tmp/ordinary.js")
+    source.identities[1] = .init(id: native, parent: 0, uid: 501, status: 2, name: "claude")
+    source.paths[native] = .init(name: "claude", executable: "/bin/claude", entrypoint: "")
+    let nativeExec = monitor.sample(desktops: [:], uptime: 5)
+    XCTAssertEqual(nativeExec.usages.count, 1); XCTAssertEqual(nativeExec.usages[0].kind, .claude)
+    source.paths.removeValue(forKey: interpreter)
+    XCTAssertEqual(monitor.sample(desktops: [:], uptime: 7).usages.count, 1)
+}
+
+func testNativeAgentDiscoveryAndIdentityGuard() {
+    let source = NativeAgentProcessSource()
+    guard let identities = source.discover(), let own = identities.first(where: { $0.id.pid == getpid() }),
+          let metadata = source.metadata(for: own), let reading = source.resources(for: own, metadata: metadata) else {
+        XCTFail("Native two-phase collection failed"); return
+    }
+    XCTAssertEqual(reading.id, own.id); XCTAssertTrue(!metadata.executable.isEmpty)
+    XCTAssertTrue(reading.cpuNanoseconds != nil); XCTAssertTrue(reading.memory != nil)
+    XCTAssertTrue(reading.detail?.threads != nil)
+    let wrong = AgentProcessIdentity(id: .init(pid: own.id.pid, started: own.id.started + 1), parent: own.parent, uid: own.uid, status: own.status, name: own.name)
+    XCTAssertNil(source.metadata(for: wrong)); XCTAssertNil(source.resources(for: wrong, metadata: metadata))
+    let monitor = AgentMonitor()
+    let sample = monitor.sample(desktops: [getpid(): .codex])
+    XCTAssertTrue(sample.usages.contains { $0.processes.contains { $0.id == own.id } })
+    XCTAssertTrue(monitor.resourceReadCount < monitor.discoveryCount)
+    _ = monitor.sample(desktops: [getpid(): .codex])
+    XCTAssertTrue(monitor.metadataReadCount < monitor.discoveryCount)
+}
+
 let tests = MetricsTests()
 let agentTests = AgentTests()
 let cases: [(String, () -> Void)] = [
+    ("System slow metrics / cadence, force refresh and failure", testSlowMetricCadence),
+    ("Details sampling / close, minimize and stale jobs", testDetailsSamplingLifecycle),
+    ("Agent selective resources / cache, discovery and recovery", testAgentSelectiveResourcesAndCache),
+    ("Agent exec / native rename and interpreter replacement", testAgentExecAndInterpreterRefresh),
+    ("Native agent discovery / identity guard and selective reads", testNativeAgentDiscoveryAndIdentityGuard),
     ("Inspector selected node / exit and PID reuse", testInspectorSelectedNodeExit),
     ("Inspector snapshot / frozen time and recovery", testInspectorFrozenSampleTime),
     ("Inspector windows / release and bounded navigation restore", testInspectorWindowReleaseAndNavigation),

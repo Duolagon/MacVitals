@@ -6,7 +6,7 @@ import IOKit.ps
 import ServiceManagement
 import CMetrics
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     private var agentsController: AgentsController?
     private var item: NSStatusItem!
     private var timer: Timer?
@@ -21,7 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let detailsQueue = DispatchQueue(label: "local.macvitals.details", qos: .utility)
     private var detailsMonitor: DetailsMonitor?
     private var detailsTimer: Timer?
-    private var detailsBusy = false
+    private var detailsSampling = DetailSamplingGate()
+    private var detailsNeedsReset = false
     private let menu = NSMenu()
     private var interval: Double { let v = UserDefaults.standard.double(forKey: "interval"); return [1.0, 2, 5, 10].contains(v) ? v : 2 }
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -68,9 +69,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 NSApp.terminate(nil)
             }
         }
-        let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.updateDetails() }
-        RunLoop.main.add(t, forMode: .common); detailsTimer = t
-        updateDetails()
         if CommandLine.arguments.contains("--show-details") { showDetails() }
         if CommandLine.arguments.contains("--show-dashboard") {
             DispatchQueue.main.async { [weak self] in self?.showDashboard() }
@@ -117,8 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.update() }
         RunLoop.main.add(t, forMode: .common); timer = t
     }
-    private func update() {
-        let s = monitor.sample()
+    private func update(forceSlow: Bool = false) {
+        let s = monitor.sample(forceSlow: forceSlow)
         item.button?.image = nil
         item.button?.title = StatusBarText.title(cpu: s.cpu, memory: s.memoryPercent, download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond)
         let cpuLabel = s.cpu.map { String(format: "%.0f%%", $0) } ?? "采样中"
@@ -127,36 +125,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         item.button?.toolTip = "MacVitals · \(s.networkInterface) · 下载 \(MetricsFormat.rate(s.downloadBytesPerSecond)) · 上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))"
         dashboard.record(s)
     }
+    private func startDetailsSampling() {
+        guard detailsWindow?.isVisible == true, detailsWindow?.isMiniaturized == false,
+              detailsSampling.resume() else { return }
+        detailsNeedsReset = true
+        dashboard.details = []
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.updateDetails() }
+        RunLoop.main.add(timer, forMode: .common); detailsTimer = timer
+        updateDetails()
+        let generation = detailsSampling.generation
+        // Establish a fresh rate baseline promptly when opening or restoring.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.detailsSampling.active, self.detailsSampling.generation == generation else { return }
+            self.updateDetails()
+        }
+    }
+    private func stopDetailsSampling() {
+        detailsSampling.pause(); detailsTimer?.invalidate(); detailsTimer = nil
+    }
     private func updateDetails() {
-        guard !detailsBusy else { return }
-        detailsBusy = true
+        guard let token = detailsSampling.begin() else { return }
+        let reset = detailsNeedsReset; detailsNeedsReset = false
         let snapshot = dashboard.latest
         detailsQueue.async { [weak self] in
             guard let self else { return }
             if self.detailsMonitor == nil { self.detailsMonitor = DetailsMonitor() }
+            if reset { self.detailsMonitor?.resetRates() }
             let sections = self.detailsMonitor!.sample(snapshot)
             DispatchQueue.main.async {
-                self.dashboard.details = sections
-                self.dashboard.detailsUpdated = Date()
-                self.detailsBusy = false
+                if self.detailsSampling.finish(token) {
+                    self.dashboard.details = sections; self.dashboard.detailsUpdated = Date()
+                } else if self.detailsSampling.active { self.updateDetails() }
             }
         }
+    }
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === detailsWindow { stopDetailsSampling() }
+    }
+    func windowDidMiniaturize(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === detailsWindow { stopDetailsSampling() }
+    }
+    func windowDidDeminiaturize(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === detailsWindow { startDetailsSampling() }
     }
     private func showDetails() {
         popover.performClose(nil)
         if detailsWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = "MacVitals · 系统详情"
+            window.delegate = self
             window.contentViewController = NSHostingController(rootView: DetailsView(model: dashboard))
             window.isReleasedWhenClosed = false; window.center(); detailsWindow = window
         }
+        update(forceSlow: true)
         NSApp.activate(ignoringOtherApps: true)
+        if detailsWindow?.isMiniaturized == true { detailsWindow?.deminiaturize(nil) }
         detailsWindow?.makeKeyAndOrderFront(nil)
+        startDetailsSampling()
     }
     @objc private func showDashboard() {
         guard let button = item.button else { return }
         if popover.isShown { popover.performClose(nil) }
         else {
+            update(forceSlow: true)
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
@@ -216,6 +247,7 @@ if CommandLine.arguments.contains("--agents-diagnose") {
     _ = m.sample(desktops: desktops); Thread.sleep(forTimeInterval: 1)
     let snapshot = m.sample(desktops: AgentRecognition.desktops())
     print("Agents: \(snapshot.usages.count) · available \(snapshot.available)")
+    print("Collector: \(m.discoveryCount) discovered · \(m.metadataReadCount) metadata reads · \(m.resourceReadCount) resource reads")
     for usage in snapshot.usages {
         print("\(usage.kind.rawValue) PID \(usage.id.pid) · \(usage.processes.count) processes · CPU \(usage.cpu.map { String(format: "%.1f%%", $0) } ?? "sampling") · RSS \(usage.memory.map { MetricsFormat.bytes($0) } ?? "unavailable") · read \(MetricsFormat.rate(usage.readRate)) · write \(MetricsFormat.rate(usage.writeRate))")
     }

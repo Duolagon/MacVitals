@@ -26,11 +26,23 @@ struct Snapshot {
     var temperature = "不可用"
     var uptime = ""
 }
+struct DiskCapacityReading { let available: UInt64, total: UInt64 }
+struct BatteryStatusReading { let percent: Double; let charging: Bool; let description: String }
 final class Monitor {
     private let host = HostPort()
     private let network = NetworkSampler()
     private var previous: [UInt32]?
-    func sample() -> Snapshot {
+    private var slowCadence: SampleCadence
+    private var slow = Snapshot()
+    private let diskReader: () -> DiskCapacityReading?
+    private let batteryReader: () -> BatteryStatusReading?
+    private let totalMemory = ProcessInfo.processInfo.physicalMemory
+    init(slowInterval: TimeInterval = 15, diskReader: @escaping () -> DiskCapacityReading? = Monitor.readDisk,
+         batteryReader: @escaping () -> BatteryStatusReading? = Monitor.readBattery) {
+        slowCadence = SampleCadence(interval: slowInterval)
+        self.diskReader = diskReader; self.batteryReader = batteryReader
+    }
+    func sample(uptime: TimeInterval = ProcessInfo.processInfo.systemUptime, forceSlow: Bool = false) -> Snapshot {
         var s = Snapshot()
         var info = host_cpu_load_info()
         var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
@@ -58,7 +70,7 @@ final class Monitor {
         s.memory = "不可用"
         if vmResult == KERN_SUCCESS {
             let used = (UInt64(vm.active_count) + UInt64(vm.wire_count) + UInt64(vm.compressor_page_count) - min(UInt64(vm.active_count), UInt64(vm.purgeable_count))) * UInt64(vm_kernel_page_size)
-            let total = ProcessInfo.processInfo.physicalMemory
+            let total = totalMemory
             s.memoryPercent = min(100, Double(used) / Double(total) * 100)
             s.memory = "\(bytes(used)) / \(bytes(total))（\(Int(s.memoryPercent ?? 0))%）"
         }
@@ -71,21 +83,18 @@ final class Monitor {
         s.networkInterface = networkReading.interface
         s.downloadBytesPerSecond = networkReading.download
         s.uploadBytesPerSecond = networkReading.upload
-        if let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]), let total = values.volumeTotalCapacity, let free = values.volumeAvailableCapacityForImportantUsage {
-            s.diskAvailableBytes = UInt64(max(0, free))
-            s.diskTotalBytes = UInt64(max(0, total))
-            s.disk = "可用 \(bytes(UInt64(max(0, free)))) / \(bytes(UInt64(total)))"
-        }
-        if let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(), let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef] {
-            for source in sources {
-                guard let d = IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue() as? [String: Any], let current = d[kIOPSCurrentCapacityKey] as? Int, let maxCapacity = d[kIOPSMaxCapacityKey] as? Int, maxCapacity > 0 else { continue }
-                let charging = d[kIOPSIsChargingKey] as? Bool ?? false
-                let state = d[kIOPSPowerSourceStateKey] as? String ?? ""
-                s.batteryPercent = min(100, max(0, Double(current) * 100 / Double(maxCapacity)))
-                s.batteryCharging = charging
-                s.battery = "\(current * 100 / maxCapacity)% · \(charging ? "充电中" : state == kIOPSACPowerValue ? "接通电源" : "使用电池")"
+        if slowCadence.shouldRefresh(at: uptime, force: forceSlow) {
+            slow = Snapshot()
+            if let disk = diskReader() {
+                slow.diskAvailableBytes = disk.available; slow.diskTotalBytes = disk.total
+                slow.disk = "可用 \(bytes(disk.available)) / \(bytes(disk.total))"
+            }
+            if let battery = batteryReader() {
+                slow.batteryPercent = battery.percent; slow.batteryCharging = battery.charging; slow.battery = battery.description
             }
         }
+        s.diskAvailableBytes = slow.diskAvailableBytes; s.diskTotalBytes = slow.diskTotalBytes; s.disk = slow.disk
+        s.batteryPercent = slow.batteryPercent; s.batteryCharging = slow.batteryCharging; s.battery = slow.battery
         let fanCount = mv_smc_read("FNum")
         if fanCount >= 0 && fanCount <= 16 {
             if fanCount == 0 { s.fans = "设备无风扇" }
@@ -106,6 +115,25 @@ final class Monitor {
         let seconds = Int(ProcessInfo.processInfo.systemUptime)
         s.uptime = "\(seconds / 86400) 天 \(seconds / 3600 % 24) 小时 \(seconds / 60 % 60) 分钟"
         return s
+    }
+    static func readDisk() -> DiskCapacityReading? {
+        guard let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]),
+              let total = values.volumeTotalCapacity, let free = values.volumeAvailableCapacityForImportantUsage else { return nil }
+        return .init(available: UInt64(max(0, free)), total: UInt64(max(0, total)))
+    }
+    static func readBattery() -> BatteryStatusReading? {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef] else { return nil }
+        for source in sources {
+            guard let d = IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue() as? [String: Any],
+                  let current = d[kIOPSCurrentCapacityKey] as? Int, let maximum = d[kIOPSMaxCapacityKey] as? Int, maximum > 0 else { continue }
+            let charging = d[kIOPSIsChargingKey] as? Bool ?? false
+            let state = d[kIOPSPowerSourceStateKey] as? String ?? ""
+            let percent = min(100, max(0, Double(current) * 100 / Double(maximum)))
+            return .init(percent: percent, charging: charging,
+                         description: "\(Int(percent))% · \(charging ? "充电中" : state == kIOPSACPowerValue ? "接通电源" : "使用电池")")
+        }
+        return nil
     }
     private func bytes(_ n: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(min(n, UInt64(Int64.max))), countStyle: .memory)

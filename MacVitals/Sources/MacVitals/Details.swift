@@ -22,6 +22,8 @@ final class DetailsMonitor {
     private var coreOld: [[UInt32]]?
     private var lastTime: TimeInterval?
     private let chip: String
+    private let modelName = DetailsMonitor.sysString("hw.model")
+    private let systemVersion = ProcessInfo.processInfo.operatingSystemVersionString
     init() {
         chip = Self.sysString("machdep.cpu.brand_string")
         for i in 0..<mv_smc_key_count() {
@@ -32,6 +34,10 @@ final class DetailsMonitor {
             }
         }
     }
+    func resetRates() {
+        lastTime = nil; coreOld = nil; processOld.removeAll()
+        networkTracker = CounterTracker(); diskTracker = CounterTracker()
+    }
     func sample(_ snapshot: Snapshot) -> [DetailSection] {
         let time = ProcessInfo.processInfo.systemUptime
         let elapsed = lastTime.map { max(0.001, time - $0) }
@@ -40,7 +46,7 @@ final class DetailsMonitor {
         func section(_ title: String, _ rows: [DetailEntry]) -> DetailSection { DetailSection(title: title, rows: rows) }
         var result: [DetailSection] = []
         var load = [Double](repeating: 0, count: 3); _ = getloadavg(&load, 3)
-        result.append(section("系统与 CPU", [row("芯片", chip), row("机型", Self.sysString("hw.model")), row("系统", ProcessInfo.processInfo.operatingSystemVersionString), row("核心", "\(ProcessInfo.processInfo.activeProcessorCount) / \(ProcessInfo.processInfo.processorCount) 个启用 / 总逻辑核心"), row("CPU 利用率", snapshot.cpu.map { String(format: "%.1f%%", $0) } ?? "采样中"), row("用户 / 系统占用", snapshot.cpuUser.flatMap { u in snapshot.cpuSystem.map { String(format: "%.1f%% / %.1f%%", u, $0) } } ?? "采样中"), row("负载均值 · 1/5/15 分钟", load.map { String(format: "%.2f", $0) }.joined(separator: " / ")), row("运行时间", snapshot.uptime), row("热状态", thermal())]))
+        result.append(section("系统与 CPU", [row("芯片", chip), row("机型", modelName), row("系统", systemVersion), row("核心", "\(ProcessInfo.processInfo.activeProcessorCount) / \(ProcessInfo.processInfo.processorCount) 个启用 / 总逻辑核心"), row("CPU 利用率", snapshot.cpu.map { String(format: "%.1f%%", $0) } ?? "采样中"), row("用户 / 系统占用", snapshot.cpuUser.flatMap { u in snapshot.cpuSystem.map { String(format: "%.1f%% / %.1f%%", u, $0) } } ?? "采样中"), row("负载均值 · 1/5/15 分钟", load.map { String(format: "%.2f", $0) }.joined(separator: " / ")), row("运行时间", snapshot.uptime), row("热状态", thermal())]))
         let power = PowerMetrics.load()
         result.append(section("CPU 每核利用率", coreUsage()))
         result.append(section("CPU 频率与功耗", power.cpuRows))

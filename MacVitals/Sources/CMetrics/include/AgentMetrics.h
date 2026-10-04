@@ -10,3 +10,14 @@ typedef struct {
 } MVAgentProcess;
 // Current user's processes only. Entry point excludes prompts and environment.
 int mv_agent_processes(MVAgentProcess *out, int capacity);
+
+// Cheap discovery: no executable paths, arguments, task info or resource usage.
+typedef struct {
+    int32_t pid, parent, uid, status;
+    uint64_t started;
+    char name[128];
+} MVAgentIdentity;
+int mv_agent_identities(MVAgentIdentity *out, int capacity);
+// Return 0 when the process exited, changed identity or belongs to another user.
+int mv_agent_metadata(int32_t pid, uint64_t started, MVAgentProcess *out);
+int mv_agent_resources(int32_t pid, uint64_t started, MVAgentProcess *out);
