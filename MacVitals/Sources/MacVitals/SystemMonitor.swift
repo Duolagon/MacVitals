@@ -16,6 +16,10 @@ struct Snapshot {
     var downloadBytesPerSecond: Double?
     var uploadBytesPerSecond: Double?
     var networkInterface = "采样中"
+    var diskAvailableBytes: UInt64?
+    var diskTotalBytes: UInt64?
+    var batteryPercent: Double?
+    var batteryCharging = false
     var disk = "不可用"
     var battery = "无电池或不可用"
     var fans = "不可用（无风扇或系统未开放）"
@@ -68,6 +72,8 @@ final class Monitor {
         s.downloadBytesPerSecond = networkReading.download
         s.uploadBytesPerSecond = networkReading.upload
         if let values = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]), let total = values.volumeTotalCapacity, let free = values.volumeAvailableCapacityForImportantUsage {
+            s.diskAvailableBytes = UInt64(max(0, free))
+            s.diskTotalBytes = UInt64(max(0, total))
             s.disk = "可用 \(bytes(UInt64(max(0, free)))) / \(bytes(UInt64(total)))"
         }
         if let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(), let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef] {
@@ -75,6 +81,8 @@ final class Monitor {
                 guard let d = IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue() as? [String: Any], let current = d[kIOPSCurrentCapacityKey] as? Int, let maxCapacity = d[kIOPSMaxCapacityKey] as? Int, maxCapacity > 0 else { continue }
                 let charging = d[kIOPSIsChargingKey] as? Bool ?? false
                 let state = d[kIOPSPowerSourceStateKey] as? String ?? ""
+                s.batteryPercent = min(100, max(0, Double(current) * 100 / Double(maxCapacity)))
+                s.batteryCharging = charging
                 s.battery = "\(current * 100 / maxCapacity)% · \(charging ? "充电中" : state == kIOPSACPowerValue ? "接通电源" : "使用电池")"
             }
         }

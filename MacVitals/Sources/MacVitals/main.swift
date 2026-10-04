@@ -71,6 +71,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if CommandLine.arguments.contains("--show-dashboard") {
             DispatchQueue.main.async { [weak self] in self?.showDashboard() }
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--export-screenshot"), index + 1 < CommandLine.arguments.count {
+            let destination = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                self?.exportScreenshot(to: destination)
+                NSApp.terminate(nil)
+            }
+        }
         if CommandLine.arguments.contains("--preview-dashboard") {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: MonitorStyle.panelHeight), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "MacVitals · 实时面板预览"
@@ -79,6 +86,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             previewWindow = window
             NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
         }
+    }
+    /// Capture only the application's own full panel, using live samples.
+    private func exportScreenshot(to destination: URL) {
+        let root = DashboardView(model: dashboard, settings: {}, showDetails: {}, exportMode: true)
+            .fixedSize(horizontal: false, vertical: true)
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(x: 0, y: 0, width: 440, height: 2000)
+        let size = host.fittingSize
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: .borderless, backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = host
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { print("Screenshot render failed"); return }
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { print("PNG encoding failed"); return }
+        do {
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: destination, options: .atomic)
+            print("Exported live panel: \(destination.path) · \(bitmap.pixelsWide)×\(bitmap.pixelsHigh)")
+        } catch { print("Screenshot export failed: \(error.localizedDescription)") }
     }
     private func startTimer() {
         timer?.invalidate()

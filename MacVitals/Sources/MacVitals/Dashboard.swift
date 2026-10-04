@@ -176,42 +176,99 @@ struct HistoryRaster: View {
         }.frame(height: 5).accessibilityLabel("最近\(seconds)秒历史强度；空格表示尚无采样")
     }
 }
+
+struct ResourceInstrument: View {
+    let battery: Bool
+    let fraction: Double?
+    let value: String
+    let subtitle: String
+    let charging: Bool
+    private var color: Color { battery ? MonitorStyle.mint : MonitorStyle.purple }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: battery ? "battery.75percent" : "internaldrive").foregroundStyle(color)
+                Text(battery ? "电池" : "磁盘").foregroundStyle(.secondary)
+                Spacer()
+                if charging { Image(systemName: "bolt.fill").foregroundStyle(color) }
+            }.font(.system(size: 11, weight: .medium))
+            Text(value).font(.system(size: battery ? 25 : 20, weight: .medium, design: .monospaced))
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.85)
+            Canvas { context, size in
+                let fraction = min(1, max(0, fraction ?? 0))
+                if battery {
+                    let body = CGRect(x: 0.5, y: 2, width: size.width - 7, height: 26)
+                    context.stroke(Path(roundedRect: body, cornerRadius: 4), with: .color(color.opacity(0.3)), lineWidth: 1)
+                    context.fill(Path(roundedRect: CGRect(x: size.width - 5, y: 10, width: 4, height: 10), cornerRadius: 1), with: .color(color.opacity(0.4)))
+                    let width = (body.width - 12 - 19 * 2) / 20
+                    for index in 0..<20 {
+                        let lit = self.fraction != nil && Double(index) / 20 < fraction
+                        let rect = CGRect(x: 6 + CGFloat(index) * (width + 2), y: 7, width: width, height: 16)
+                        context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(lit ? color : .white.opacity(0.065)))
+                    }
+                } else {
+                    let width = (size.width - 15 * 3) / 16
+                    for row in 0..<3 {
+                        for column in 0..<16 {
+                            let index = row * 16 + column
+                            let lit = self.fraction != nil && Double(index) / 48 < fraction
+                            let rect = CGRect(x: CGFloat(column) * (width + 3), y: CGFloat(row) * 9, width: width, height: 6)
+                            context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(lit ? color.opacity(1 - Double(row) * 0.1) : .white.opacity(0.065)))
+                        }
+                    }
+                }
+            }.frame(height: 30)
+                .accessibilityLabel(battery ? "电量分段刻度" : "磁盘占用分段刻度")
+            Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).help(subtitle)
+        }.frame(maxWidth: .infinity, alignment: .leading).modifier(MonitorCard())
+    }
+}
 struct DashboardView: View {
     @ObservedObject var model: DashboardModel
     let settings: () -> Void
     let showDetails: () -> Void
+    var exportMode = false
     @State private var seconds = 120
+    init(model: DashboardModel, settings: @escaping () -> Void, showDetails: @escaping () -> Void, exportMode: Bool = false) {
+        self.model = model; self.settings = settings; self.showDetails = showDetails
+        self.exportMode = exportMode
+        _seconds = State(initialValue: exportMode ? 30 : 120)
+    }
     private var points: [Reading] { model.readings.filter { $0.time >= model.now.addingTimeInterval(-Double(seconds)) } }
     private var domain: ClosedRange<Date> { model.now.addingTimeInterval(-Double(seconds))...model.now }
     var body: some View {
         VStack(spacing: 0) {
             header
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Text("遥测仪表").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-                        Spacer()
-                        Picker("曲线时间范围", selection: $seconds) {
-                            Text("30 秒").tag(30)
-                            Text("1 分钟").tag(60)
-                            Text("2 分钟").tag(120)
-                        }.labelsHidden().pickerStyle(.segmented).frame(width: 188).controlSize(.small)
-                    }
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-                        metricCard("CPU", icon: "cpu", value: model.latest.cpu.map { String(format: "%.0f", $0) }, unit: "%", detail: "全部核心", color: MonitorStyle.blue, kind: .cpu, ceiling: 100, metric: { $0.cpu })
-                        metricCard("内存", icon: "memorychip", value: model.latest.memoryPercent.map { String(Int($0)) }, unit: "%", detail: model.latest.memory, color: MonitorStyle.purple, kind: .memory, ceiling: 100, metric: { $0.memoryPercent })
-                        metricCard("风扇", icon: "fanblades", value: model.latest.fanRPM.map { String(format: "%.0f", $0) }, unit: "RPM", detail: "最高转速", color: MonitorStyle.mint, kind: .fan, ceiling: max(6000, (points.compactMap { $0.snapshot.fanRPM }.max() ?? 0) * 1.1), metric: { $0.fanRPM })
-                        metricCard("温度", icon: "thermometer.medium", value: model.latest.temperatureC.map { String(format: "%.1f", $0) }, unit: "°C", detail: "CPU 区域传感器", color: MonitorStyle.amber, kind: .temperature, ceiling: max(100, (points.compactMap { $0.snapshot.temperatureC }.max() ?? 0) * 1.1), metric: { $0.temperatureC })
-                    }
-                    networkCard
-                    systemCard
-                }.padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 18)
-            }
+            contentContainer
             footer
         }
-        .frame(width: 440, height: MonitorStyle.panelHeight)
+        .frame(width: 440, height: exportMode ? nil : MonitorStyle.panelHeight)
         .background(MonitorStyle.background)
         .preferredColorScheme(.dark)
+    }
+    @ViewBuilder private var contentContainer: some View {
+        if exportMode { content } else { ScrollView { content } }
+    }
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("遥测仪表").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Picker("曲线时间范围", selection: $seconds) {
+                    Text("30 秒").tag(30)
+                    Text("1 分钟").tag(60)
+                    Text("2 分钟").tag(120)
+                }.labelsHidden().pickerStyle(.segmented).frame(width: 188).controlSize(.small)
+            }
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                metricCard("CPU", icon: "cpu", value: model.latest.cpu.map { String(format: "%.0f", $0) }, unit: "%", detail: "全部核心", color: MonitorStyle.blue, kind: .cpu, ceiling: 100, metric: { $0.cpu })
+                metricCard("内存", icon: "memorychip", value: model.latest.memoryPercent.map { String(Int($0)) }, unit: "%", detail: model.latest.memory, color: MonitorStyle.purple, kind: .memory, ceiling: 100, metric: { $0.memoryPercent })
+                metricCard("风扇", icon: "fanblades", value: model.latest.fanRPM.map { String(format: "%.0f", $0) }, unit: "RPM", detail: "最高转速", color: MonitorStyle.mint, kind: .fan, ceiling: max(6000, (points.compactMap { $0.snapshot.fanRPM }.max() ?? 0) * 1.1), metric: { $0.fanRPM })
+                metricCard("温度", icon: "thermometer.medium", value: model.latest.temperatureC.map { String(format: "%.1f", $0) }, unit: "°C", detail: "CPU 区域传感器", color: MonitorStyle.amber, kind: .temperature, ceiling: max(100, (points.compactMap { $0.snapshot.temperatureC }.max() ?? 0) * 1.1), metric: { $0.temperatureC })
+            }
+            networkCard
+            systemCard
+        }.padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 18)
     }
     private var header: some View {
         HStack(spacing: 11) {
@@ -300,11 +357,22 @@ struct DashboardView: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private var systemCard: some View {
-        VStack(spacing: 9) {
-            summaryRow("电池", model.latest.battery, icon: "battery.75percent")
-            summaryRow("磁盘可用", model.latest.disk, icon: "internaldrive")
-            summaryRow("交换空间", model.latest.swap, icon: "arrow.left.arrow.right")
-        }.modifier(MonitorCard())
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                ResourceInstrument(battery: true, fraction: model.latest.batteryPercent.map { $0 / 100 },
+                    value: model.latest.batteryPercent.map { "\(Int($0))%" } ?? "—",
+                    subtitle: model.latest.battery, charging: model.latest.batteryCharging)
+                ResourceInstrument(battery: false, fraction: diskUsedFraction,
+                    value: model.latest.diskAvailableBytes.map { MetricsFormat.bytes($0) } ?? "—",
+                    subtitle: diskUsedFraction.map { "可用 · 已用 \(Int($0 * 100))%" } ?? "暂无可用数据", charging: false)
+                    .help(model.latest.disk + "；亮色块表示已占用容量")
+            }
+            summaryRow("交换空间", model.latest.swap, icon: "arrow.left.arrow.right").modifier(MonitorCard())
+        }
+    }
+    private var diskUsedFraction: Double? {
+        guard let total = model.latest.diskTotalBytes, total > 0, let available = model.latest.diskAvailableBytes else { return nil }
+        return 1 - min(1, Double(available) / Double(total))
     }
     private func summaryRow(_ title: String, _ value: String, icon: String) -> some View {
         HStack(spacing: 8) {
