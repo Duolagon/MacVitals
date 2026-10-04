@@ -4,6 +4,8 @@ import CMetrics
 
 struct NetworkReading {
     var interface = "无活动网络"
+    var ipv4 = ""
+    var ipv6 = ""
     var download: Double?
     var upload: Double?
 }
@@ -11,6 +13,7 @@ struct NetworkInterfaceReading {
     let name: String
     let index: UInt32
     let address: String
+    var ipv6 = ""
     let counters: ByteCounters
     var id: String { "\(name)#\(index)" }
 }
@@ -32,7 +35,7 @@ final class NetworkSampler {
         let interfaces = buffer.prefix(Int(count)).map { original -> NetworkInterfaceReading in
             var n = original
             func string<T>(_ value: inout T) -> String { withUnsafePointer(to: &value) { $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout<T>.size) { String(cString: $0) } } }
-            return NetworkInterfaceReading(name: string(&n.name), index: n.index, address: string(&n.address), counters: .init(received: n.received, sent: n.sent))
+            return NetworkInterfaceReading(name: string(&n.name), index: n.index, address: string(&n.address), ipv6: string(&n.ipv6), counters: .init(received: n.received, sent: n.sent))
         }
         let rates = tracker.sample(Dictionary(uniqueKeysWithValues: interfaces.map { ($0.id, $0.counters) }), elapsed: elapsed)
         var primary: String?
@@ -45,12 +48,14 @@ final class NetworkSampler {
         let sameInterface = selectedID == selected.id
         selectedID = selected.id
         let rate = sameInterface ? rates[selected.id] : nil
-        return NetworkReading(interface: selected.name, download: rate?.received, upload: rate?.sent)
+        return NetworkReading(interface: selected.name, ipv4: selected.address, ipv6: selected.ipv6, download: rate?.received, upload: rate?.sent)
     }
     /// Prefer a single primary physical interface to avoid VPN double counting.
     static func select(_ interfaces: [NetworkInterfaceReading], primary: String?) -> NetworkInterfaceReading? {
         if let selected = interfaces.first(where: { $0.name == primary && $0.name.hasPrefix("en") }) { return selected }
-        if let physical = interfaces.filter({ $0.name.hasPrefix("en") && !$0.address.isEmpty }).sorted(by: { $0.name < $1.name }).first { return physical }
+        if let physical = interfaces.filter({
+            $0.name.hasPrefix("en") && (!$0.address.isEmpty || $0.ipv6.split(separator: "\n").contains { !$0.lowercased().hasPrefix("fe80:") })
+        }).sorted(by: { $0.name < $1.name }).first { return physical }
         if let selected = interfaces.first(where: { $0.name == primary }) { return selected }
         return nil
     }

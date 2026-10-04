@@ -16,6 +16,8 @@ struct Snapshot {
     var downloadBytesPerSecond: Double?
     var uploadBytesPerSecond: Double?
     var networkInterface = "采样中"
+    var networkIPv4 = ""
+    var networkIPv6 = ""
     var diskAvailableBytes: UInt64?
     var diskTotalBytes: UInt64?
     var batteryPercent: Double?
@@ -81,6 +83,8 @@ final class Monitor {
         }
         let networkReading = network.sample()
         s.networkInterface = networkReading.interface
+        s.networkIPv4 = networkReading.ipv4
+        s.networkIPv6 = networkReading.ipv6
         s.downloadBytesPerSecond = networkReading.download
         s.uploadBytesPerSecond = networkReading.upload
         if slowCadence.shouldRefresh(at: uptime, force: forceSlow) {

@@ -322,6 +322,11 @@ struct DashboardView: View {
                 Spacer(minLength: 12)
                 networkValue("上传", arrow: "arrow.up", rate: model.latest.uploadBytesPerSecond, color: MonitorStyle.amber)
             }
+            VStack(alignment: .leading, spacing: 7) {
+                networkAddress("IPv4", value: model.latest.networkIPv4)
+                networkAddress("IPv6", value: model.latest.networkIPv6)
+            }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
             Chart {
                 RuleMark(y: .value("零线", 0)).foregroundStyle(MonitorStyle.border)
                 ForEach(points) { point in
@@ -355,6 +360,22 @@ struct DashboardView: View {
             Text(MetricsFormat.rate(rate)).font(.system(size: 17, weight: .semibold, design: .rounded))
                 .monospacedDigit().foregroundStyle(.primary).lineLimit(1).minimumScaleFactor(0.8)
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func networkAddress(_ family: String, value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(family).font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(MonitorStyle.mint).frame(width: 34, alignment: .leading)
+            Text(value.isEmpty ? "未分配" : value).font(.system(size: 11, design: .monospaced))
+                .textSelection(.enabled).lineLimit(2).truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading).help(value.isEmpty ? "该接口未分配 \(family) 地址" : value)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(value, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(.secondary)
+            }.buttonStyle(.plain).disabled(value.isEmpty)
+                .accessibilityLabel("复制 \(family) 地址").help("复制全部 \(family) 地址")
+        }
     }
     private var systemCard: some View {
         VStack(spacing: 12) {

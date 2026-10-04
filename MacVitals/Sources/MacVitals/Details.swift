@@ -118,9 +118,9 @@ final class DetailsMonitor {
         let rates = networkTracker.sample(current, elapsed: elapsed)
         let rows: [DetailEntry] = buffer.prefix(Int(count)).map { original in
             var n = original
-            let name = cString(&n.name), ip = cString(&n.address)
+            let name = cString(&n.name), ip = cString(&n.address), ipv6 = cString(&n.ipv6)
             let speed = rates["\(name)#\(n.index)"].map { "↓ \(bytes(UInt64($0.received)))/s  ↑ \(bytes(UInt64($0.sent)))/s" } ?? "速度采样中（首次读取或计数器重置）"
-            return .init(label: name, value: "\(ip.isEmpty ? "无 IPv4" : ip)\n\(speed)\n接口累计 ↓ \(bytes(n.received)) ↑ \(bytes(n.sent))")
+            return .init(label: name, value: "IPv4: \(ip.isEmpty ? "未分配" : ip)\nIPv6: \(ipv6.isEmpty ? "未分配" : ipv6)\n\(speed)\n接口累计 ↓ \(bytes(n.received)) ↑ \(bytes(n.sent))")
         }
         return rows.isEmpty ? [.init(label: "状态", value: "无活动网络接口")] : rows + [.init(label: "统计口径", value: "使用系统 64 位接口计数。包含虚拟接口，可能重复计算流量，勿相加。")]
     }

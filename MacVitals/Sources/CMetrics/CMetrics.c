@@ -93,6 +93,7 @@ int mv_smc_dump(void) { pthread_mutex_lock(&smc_mutex); int result = dump_unlock
 #include <net/if_dl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <libproc.h>
 #include <sys/resource.h>
 #include <stdlib.h>
@@ -127,9 +128,16 @@ int mv_network(MVNetwork *out, int capacity) {
         }
         if (!found) { count--; continue; }
         for (struct ifaddrs *a = list; a; a = a->ifa_next) {
-            if (strcmp(a->ifa_name, p->ifa_name) == 0 && a->ifa_addr && a->ifa_addr->sa_family == AF_INET) {
-                inet_ntop(AF_INET, &((struct sockaddr_in *)a->ifa_addr)->sin_addr, n->address, sizeof(n->address)); break;
-            }
+            if (strcmp(a->ifa_name, p->ifa_name) != 0 || !a->ifa_addr) continue;
+            int family = a->ifa_addr->sa_family;
+            if (family != AF_INET && family != AF_INET6) continue;
+            char host[NI_MAXHOST];
+            if (getnameinfo(a->ifa_addr, a->ifa_addr->sa_len, host, sizeof(host), NULL, 0, NI_NUMERICHOST) != 0) continue;
+            char *addresses = family == AF_INET ? n->address : n->ipv6;
+            size_t capacity = family == AF_INET ? sizeof(n->address) : sizeof(n->ipv6);
+            size_t used = strlen(addresses), needed = strlen(host) + (used ? 1 : 0);
+            if (needed >= capacity - used) continue;
+            snprintf(addresses + used, capacity - used, "%s%s", used ? "\n" : "", host);
         }
     }
     free(route); freeifaddrs(list); return count;

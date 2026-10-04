@@ -259,7 +259,7 @@ if CommandLine.arguments.contains("--agents-diagnose") {
 } else if CommandLine.arguments.contains("--diagnose") {
     let m = Monitor(); _ = m.sample(); Thread.sleep(forTimeInterval: 1)
     let s = m.sample()
-    print("CPU: \(s.cpu.map { String(format: "%.1f%%", $0) } ?? "unavailable")\n内存: \(s.memory)\n网络: \(s.networkInterface) 下载 \(MetricsFormat.rate(s.downloadBytesPerSecond)) 上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))\n交换: \(s.swap) · 分配 \(s.swapAllocated)\n磁盘: \(s.disk)\n电池: \(s.battery)\n风扇: \(s.fans)\n温度: \(s.temperature)\n运行时间: \(s.uptime)")
+    print("CPU: \(s.cpu.map { String(format: "%.1f%%", $0) } ?? "unavailable")\n内存: \(s.memory)\n网络: \(s.networkInterface) 下载 \(MetricsFormat.rate(s.downloadBytesPerSecond)) 上传 \(MetricsFormat.rate(s.uploadBytesPerSecond))\nIPv4: \(s.networkIPv4.isEmpty ? "未分配" : s.networkIPv4)\nIPv6: \(s.networkIPv6.isEmpty ? "未分配" : s.networkIPv6)\n交换: \(s.swap) · 分配 \(s.swapAllocated)\n磁盘: \(s.disk)\n电池: \(s.battery)\n风扇: \(s.fans)\n温度: \(s.temperature)\n运行时间: \(s.uptime)")
 } else {
     let app = NSApplication.shared
     let delegate = AppDelegate()

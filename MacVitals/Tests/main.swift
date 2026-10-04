@@ -36,6 +36,11 @@ final class MetricsTests {
         XCTAssertEqual(NetworkSampler.select(interfaces, primary: "en1")?.name, "en1")
         XCTAssertEqual(NetworkSampler.select(interfaces, primary: "utun0")?.name, "en0")
         XCTAssertNil(NetworkSampler.select([], primary: nil))
+        let ipv6Only = NetworkInterfaceReading(name: "en3", index: 4, address: "", ipv6: "2001:db8::42\nfe80::42%en3", counters: .init(received: 0, sent: 0))
+        XCTAssertEqual(NetworkSampler.select([interfaces[0], ipv6Only], primary: nil)?.ipv6, ipv6Only.ipv6)
+        XCTAssertEqual(NetworkSampler.select([interfaces[1], ipv6Only], primary: "en3")?.name, "en3")
+        let linkOnly = NetworkInterfaceReading(name: "en0", index: 5, address: "", ipv6: "fe80::42%en0", counters: .init(received: 0, sent: 0))
+        XCTAssertEqual(NetworkSampler.select([linkOnly, ipv6Only], primary: nil)?.name, "en3")
     }
     func testCounterResetAndInterfaceReplacement() {
         var tracker = CounterTracker()
