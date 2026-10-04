@@ -23,7 +23,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let menu = NSMenu()
     private var interval: Double { let v = UserDefaults.standard.double(forKey: "interval"); return [1.0, 2, 5, 10].contains(v) ? v : 2 }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let statusName = "MacVitals"
+        let preferences = UserDefaults.standard
+        // Seed a right-side position once. This preference is a best-effort
+        // macOS convention; autosaveName then preserves subsequent user moves.
+        if !preferences.bool(forKey: "statusPositionInitialized") {
+            preferences.set(0, forKey: "NSStatusItem Preferred Position " + statusName)
+            preferences.set(true, forKey: "statusPositionInitialized")
+        }
         item = NSStatusBar.system.statusItem(withLength: StatusBarText.width)
+        item.autosaveName = statusName
         item.button?.font = StatusBarText.font
         item.button?.toolTip = "MacVitals · 点击查看系统状态"
         item.button?.target = self
