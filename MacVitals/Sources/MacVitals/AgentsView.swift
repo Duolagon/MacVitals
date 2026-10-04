@@ -248,6 +248,9 @@ private struct AgentSigil: View {
 struct AgentDetailsView: View {
     @ObservedObject var model: AgentsModel
     let instance: AgentProcessID
+    var networkWindow = false
+    var initialSelection: AgentProcessID? = nil
+    var openNetwork: (AgentProcessID) -> Void = { _ in }
     @State private var lastKnown: AgentUsage?
     private var current: AgentUsage? { model.latest.usages.first { $0.id == instance } }
     private var usage: AgentUsage? { current ?? lastKnown }
@@ -272,7 +275,7 @@ struct AgentDetailsView: View {
                 Rectangle().fill(accent.opacity(0.2)).frame(height: 1)
                 HStack(spacing: 0) {
                     AgentNeuralMap(usage: usage, root: instance, selected: selected?.id ?? instance,
-                                   accent: accent, live: current != nil && model.latest.available, expanded: $expandedGraph,
+                                   accent: accent, live: current != nil && model.latest.available, expanded: $expandedGraph, standalone: networkWindow, openNetwork: openNetwork,
                                    select: { selection = $0 })
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if !expandedGraph {
@@ -327,7 +330,7 @@ struct AgentDetailsView: View {
                 AgentsStyle.background
                 RadialGradient(colors: [accent.opacity(0.055), .clear], center: .topLeading, startRadius: 0, endRadius: 800)
             }.preferredColorScheme(.dark)
-            .onAppear { if let current { lastKnown = current } }
+            .onAppear { if let current { lastKnown = current }; if selection == nil { selection = initialSelection } }
             .onReceive(model.$latest) { snapshot in
                 if let value = snapshot.usages.first(where: { $0.id == instance }) { lastKnown = value }
             }
@@ -336,9 +339,9 @@ struct AgentDetailsView: View {
         HStack(spacing: 14) {
             AgentSigil(seed: 0, color: accent).frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 5) {
-                Text(usage?.kind.rawValue ?? "Agent")
+                Text((networkWindow ? "神经网络 · " : "") + (usage?.kind.rawValue ?? "Agent"))
                     .font(.system(size: 26, weight: .semibold))
-                Text("进程神经网络 · PID " + String(instance.pid))
+                Text((networkWindow ? "独立进程查看器 · 点击节点查看完整信息 · PID " : "点击神经图，在独立窗口中查看 · PID ") + String(instance.pid))
                     .font(.system(size: 12)).foregroundStyle(accent.opacity(0.8))
             }
             Spacer()
@@ -493,6 +496,8 @@ private struct AgentNeuralMap: View {
     let accent: Color
     let live: Bool
     @Binding var expanded: Bool
+    let standalone: Bool
+    let openNetwork: (AgentProcessID) -> Void
     let select: (AgentProcessID) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query = ""
@@ -523,8 +528,8 @@ private struct AgentNeuralMap: View {
                 Text("进程网络").font(.system(size: 14, weight: .semibold)).foregroundStyle(accent)
                 Spacer()
                 Button(listMode ? "节点网络" : "进程列表") { listMode.toggle() }.buttonStyle(.plain).foregroundStyle(.secondary)
-                Button { expanded.toggle() } label: { Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") }
-                    .buttonStyle(.plain).accessibilityLabel(expanded ? "收起神经图" : "展开神经图").help(expanded ? "恢复详情布局" : "展开神经图")
+                Button { if standalone { expanded.toggle() } else { openNetwork(selected) } } label: { Image(systemName: standalone ? (expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") : "arrow.up.forward.app") }
+                    .buttonStyle(.plain).accessibilityLabel(standalone ? (expanded ? "收起神经图" : "展开神经图") : "在独立窗口查看神经网络").help(standalone ? (expanded ? "恢复详情布局" : "扩大画布") : "打开独立神经网络查看器")
             }.padding(.horizontal, 22).padding(.top, 18)
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(accent)
@@ -547,7 +552,7 @@ private struct AgentNeuralMap: View {
                     Button { page = min(pages - 1, effectivePage + 1) } label: { Image(systemName: "chevron.right") }.disabled(effectivePage == pages-1)
                 }
             }.font(.system(size: 9)).foregroundStyle(accent.opacity(0.9)).buttonStyle(.plain).padding(.horizontal, 22).padding(.bottom, 12)
-            Text("拖动移动 · 触控板捏合缩放 · 粒子仅表示 CPU 活动")
+            Text(standalone ? "点击节点查看详情 · 拖动移动 · 捏合缩放" : "点击任意节点或空白区域，打开独立神经网络查看器")
                 .font(.system(size: 9)).foregroundStyle(.secondary).padding(.bottom, 16)
         }.background(Color.black.opacity(0.12))
     }
@@ -574,6 +579,8 @@ private struct AgentNeuralMap: View {
     }
     private func graphContent(size: CGSize, positions: [AgentProcessID: CGPoint], labeled: Set<AgentProcessID>) -> some View {
         ZStack {
+            Color.clear.contentShape(Rectangle())
+                .onTapGesture { if !standalone { openNetwork(selected) } }
             TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || !live)) { timeline in
                 Canvas { context, size in draw(&context, size: size, positions: positions, time: timeline.date.timeIntervalSinceReferenceDate) }
             }.allowsHitTesting(false).accessibilityHidden(true)
@@ -687,7 +694,7 @@ private struct AgentNeuralMap: View {
                                 }
     }
     private func processButton(_ p: AgentProcessUsage) -> some View {
-        Button { select(p.id) } label: {
+        Button { select(p.id); if !standalone { openNetwork(p.id) } } label: {
             Group {
                 if p.id == root {
                     VStack(spacing: 4) {

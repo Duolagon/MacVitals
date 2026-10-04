@@ -15,6 +15,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     private var resignObserver: NSObjectProtocol?
     private var previewWindow: NSWindow?
     private var detailWindows: [AgentProcessID: NSWindow] = [:]
+    private var networkWindows: [AgentProcessID: NSWindow] = [:]
     private var didPreviewDetails = false
     private var interval: Double {
         let value = UserDefaults.standard.double(forKey: "agents.interval")
@@ -122,11 +123,26 @@ final class AgentsController: NSObject, NSPopoverDelegate {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.title = "Agent 详情 · PID \(id.pid)"
             window.isReleasedWhenClosed = false
-            window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id))
+            window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, openNetwork: { [weak self] node in self?.showNetwork(id, selected: node) }))
             window.center(); detailWindows[id] = window
         }
         popover.performClose(nil)
         NSApp.activate(ignoringOtherApps: true); detailWindows[id]?.makeKeyAndOrderFront(nil)
+    }
+    private func showNetwork(_ id: AgentProcessID, selected node: AgentProcessID) {
+        let window: NSWindow
+        if let existing = networkWindows[id] { window = existing }
+        else {
+            let available = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
+            let size = NSSize(width: min(1280, available.width - 60), height: min(860, available.height - 60))
+            window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            window.title = "神经网络 · PID \(id.pid)"
+            window.isReleasedWhenClosed = false
+            window.collectionBehavior = [.fullScreenPrimary]
+            window.center(); networkWindows[id] = window
+        }
+        window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, networkWindow: true, initialSelection: node))
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
     }
     /// Export only this module's own view with live samples, for layout review.
     private func exportDetails(_ id: AgentProcessID, to destination: URL) {
@@ -151,6 +167,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         running = false; timer?.invalidate(); timer = nil
         popover.performClose(nil); stopDismissMonitoring()
         for window in detailWindows.values { window.close() }; detailWindows.removeAll()
+        for window in networkWindows.values { window.close() }; networkWindows.removeAll()
         previewWindow?.close(); NSStatusBar.system.removeStatusItem(item)
     }
 }
