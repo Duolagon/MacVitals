@@ -252,7 +252,8 @@ struct AgentDetailsView: View {
     private var current: AgentUsage? { model.latest.usages.first { $0.id == instance } }
     private var usage: AgentUsage? { current ?? lastKnown }
     @State private var selection: AgentProcessID?
-    private var accent: Color { usage?.kind == .claude ? AgentsStyle.purple : AgentsStyle.cyan }
+    @State private var expandedGraph = false
+    private var accent: Color { usage?.kind == .claude ? Color(red: 0.72, green: 0.66, blue: 0.93) : Color(red: 0.46, green: 0.73, blue: 0.90) }
     private var selected: AgentProcessUsage? {
         guard let usage else { return nil }
         return usage.processes.first { $0.id == (selection ?? instance) } ?? usage.processes.first { $0.id == instance } ?? usage.processes.first
@@ -262,28 +263,29 @@ struct AgentDetailsView: View {
             header
             if let usage {
                 HStack(spacing: 12) {
-                    instrument("01 / COMPUTE", value: usage.cpu.map { String(format: "%.1f%%", $0) } ?? "—",
+                    instrument("CPU 占用", value: usage.cpu.map { String(format: "%.1f%%", $0) } ?? "—",
                                caption: usage.cpu.map { String(format: "整机 %.2f%% · 单核 100%%", $0 / Double(max(1, ProcessInfo.processInfo.activeProcessorCount))) } ?? "等待采样基线", channel: 0)
-                    instrument("02 / MEMORY", value: bytes(usage.memory), caption: "RSS 合计 / 共享页可能重复", channel: 1)
-                    instrument("03 / DISK RX", value: MetricsFormat.rate(usage.readRate), caption: "磁盘读取 / BYTES·SEC", channel: 2)
-                    instrument("04 / DISK TX", value: MetricsFormat.rate(usage.writeRate), caption: "磁盘写入 / BYTES·SEC", channel: 3)
+                    instrument("驻留内存", value: bytes(usage.memory), caption: "RSS 合计 / 共享页可能重复", channel: 1)
+                    instrument("磁盘读取", value: MetricsFormat.rate(usage.readRate), caption: "磁盘读取 / BYTES·SEC", channel: 2)
+                    instrument("磁盘写入", value: MetricsFormat.rate(usage.writeRate), caption: "磁盘写入 / BYTES·SEC", channel: 3)
                 }.padding(16)
                 Rectangle().fill(accent.opacity(0.2)).frame(height: 1)
                 HStack(spacing: 0) {
                     AgentNeuralMap(usage: usage, root: instance, selected: selected?.id ?? instance,
-                                   accent: accent, live: current != nil && model.latest.available,
+                                   accent: accent, live: current != nil && model.latest.available, expanded: $expandedGraph,
                                    select: { selection = $0 })
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    Rectangle().fill(accent.opacity(0.2)).frame(width: 1)
+                    if !expandedGraph {
+                    Rectangle().fill(Color.white.opacity(0.06)).frame(width: 1)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             if let selected {
                                 HStack(spacing: 10) {
                                     AgentSigil(seed: selected.id == instance ? 0 : 1, color: accent).frame(width: 34, height: 34)
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text(selected.name.uppercased()).font(.system(size: 16, weight: .bold, design: .monospaced)).lineLimit(1)
-                                        Text("NODE #" + String(selected.id.pid) + " / " + (selected.id == instance ? "ROOT PROCESS" : "CHILD PROCESS"))
-                                            .font(.system(size: 9, design: .monospaced)).tracking(1).foregroundStyle(accent)
+                                        Text(selected.name).font(.system(size: 18, weight: .semibold)).lineLimit(1)
+                                        Text("PID " + String(selected.id.pid) + " · " + (selected.id == instance ? "根进程" : "子进程"))
+                                            .font(.system(size: 11)).foregroundStyle(accent.opacity(0.8))
                                     }
                                     Spacer()
                                     Text(selected.cpu.map { String(format: "%.1f%%", $0) } ?? "—")
@@ -291,7 +293,7 @@ struct AgentDetailsView: View {
                                 }
                                 processDetails(selected)
                             }
-                            terminalSection("INSTANCE / 根实例") {
+                            terminalSection("实例概览") {
                                 row("启动时间", started(instance.started))
                                 row("运行时长", duration(max(0, model.latest.time.timeIntervalSince1970 - Double(instance.started) / 1e6)))
                                 row("进程 / 可读线程合计", "\(usage.processes.count) / \(usage.processes.compactMap { $0.detail?.threads }.reduce(0, +))")
@@ -302,10 +304,11 @@ struct AgentDetailsView: View {
                                 Text("CPU 以单核 100% 计；RSS 与物理足迹相加可能重复计算共享资源，虚拟内存不代表实际占用。磁盘计数从进程启动累计。BSD 状态与运行线程数是瞬时状态，不能证明 Agent 正在执行任务。\n\n未接入：会话、任务内容、模型、Token、费用、工具调用、远程 Agent、单进程网速。不会展示提示词、完整命令参数或环境变量。")
                                     .font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 10)
                             } label: {
-                                Text("DATA CONTRACT / 指标口径与采集范围").font(.system(size: 9, design: .monospaced)).tracking(0.6)
+                                Text("DATA CONTRACT / 指标口径与采集范围").font(.system(size: 11)).tracking(0.6)
                             }.tint(accent).padding(12).background(AgentsStyle.card)
                         }.padding(18)
-                    }.frame(width: 390)
+                    }.frame(width: 410)
+                    }
                 }
             } else {
                 Spacer()
@@ -317,16 +320,12 @@ struct AgentDetailsView: View {
                 Text(!model.latest.available ? "READ FAILED / 保留最后快照" : current == nil ? "OFFLINE / 实例已退出" : "LINK ESTABLISHED / 本地进程可见")
                 Spacer()
                 Text("120s BUFFER · READ ONLY · LOCAL")
-            }.font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary).padding(12)
+            }.font(.system(size: 11)).foregroundStyle(.secondary).padding(12)
                 .overlay(alignment: .top) { Rectangle().fill(accent.opacity(0.25)).frame(height: 1) }
         }.frame(minWidth: 980, minHeight: 680)
             .background {
                 AgentsStyle.background
-                Canvas { context, size in
-                    for y in stride(from: CGFloat(0), to: size.height, by: 4) {
-                        context.fill(Path(CGRect(x: 0, y: y, width: size.width, height: 1)), with: .color(accent.opacity(0.025)))
-                    }
-                }.allowsHitTesting(false).accessibilityHidden(true)
+                RadialGradient(colors: [accent.opacity(0.055), .clear], center: .topLeading, startRadius: 0, endRadius: 800)
             }.preferredColorScheme(.dark)
             .onAppear { if let current { lastKnown = current } }
             .onReceive(model.$latest) { snapshot in
@@ -337,28 +336,27 @@ struct AgentDetailsView: View {
         HStack(spacing: 14) {
             AgentSigil(seed: 0, color: accent).frame(width: 44, height: 44)
             VStack(alignment: .leading, spacing: 5) {
-                Text((usage?.kind.rawValue.uppercased() ?? "AGENT") + " / NEURAL ATLAS")
-                    .font(.system(size: 21, weight: .semibold)).tracking(0.6)
-                Text("LOCAL PROCESS NETWORK / ROOT #" + String(instance.pid))
-                    .font(.system(size: 9, design: .monospaced)).tracking(1.6).foregroundStyle(accent.opacity(0.8))
+                Text(usage?.kind.rawValue ?? "Agent")
+                    .font(.system(size: 26, weight: .semibold))
+                Text("进程神经网络 · PID " + String(instance.pid))
+                    .font(.system(size: 12)).foregroundStyle(accent.opacity(0.8))
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 5) {
                 Text(String(format: "%02d", usage?.processes.count ?? 0)).font(.system(size: 27, weight: .light, design: .monospaced)).foregroundStyle(accent)
-                Text("PROCESS NODES / " + model.latest.time.formatted(date: .omitted, time: .standard))
-                    .font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+                Text("个进程 · " + model.latest.time.formatted(date: .omitted, time: .standard))
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }.padding(20).overlay(alignment: .bottom) { Rectangle().fill(accent.opacity(0.4)).frame(height: 1) }
     }
     private func instrument(_ title: String, value: String, caption: String, channel: Int) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.system(size: 9, design: .monospaced)).tracking(1).foregroundStyle(accent)
-            Text(value).font(.system(size: 23, weight: .medium, design: .monospaced)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+            Text(title).font(.system(size: 11)).foregroundStyle(accent.opacity(0.8))
+            Text(value).font(.system(size: 27, weight: .medium, design: .rounded)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
             trace(channel).frame(height: 18)
-            Text(caption).font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(12).background(AgentsStyle.card)
-            .overlay(Rectangle().stroke(accent.opacity(0.18), lineWidth: 1))
-            .overlay(alignment: .topLeading) { Rectangle().fill(accent).frame(width: 20, height: 2) }
+            Text(caption).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(15).background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.055), lineWidth: 1))
     }
     private func trace(_ channel: Int) -> some View {
         Canvas { context, size in
@@ -388,29 +386,29 @@ struct AgentDetailsView: View {
     private func terminalSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(title).font(.system(size: 10, weight: .bold, design: .monospaced)).tracking(1).foregroundStyle(accent)
+                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(accent)
                 Spacer()
-                Text("RO").font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+                Image(systemName: "lock").font(.system(size: 10)).foregroundStyle(.secondary)
             }.padding(12).background(accent.opacity(0.06))
             VStack(spacing: 0, content: content).padding(.horizontal, 12).padding(.vertical, 4)
         }.background(AgentsStyle.card.opacity(0.7), in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(accent.opacity(0.14), lineWidth: 1))
     }
     private func processDetails(_ p: AgentProcessUsage) -> some View {
         VStack(spacing: 14) {
-            terminalSection("IDENTITY / 节点身份") {
+            terminalSection("节点身份") {
                 row("PID / PPID / UID", "\(p.id.pid) / \(p.detail.map { String($0.parent) } ?? "—") / \(p.detail.map { String($0.uid) } ?? "—")")
                 row("启动时间", started(p.id.started))
                 row("可执行文件", p.detail.flatMap { $0.executable.isEmpty ? nil : $0.executable } ?? "不可读")
                 row("脚本 / 模块入口", p.detail.flatMap { $0.entrypoint.isEmpty ? nil : $0.entrypoint } ?? "未提供 / 原生进程")
                 row("BSD 状态", p.detail.map { state($0.status) } ?? "不可读")
             }
-            terminalSection("RESOURCES / 执行资源") {
+            terminalSection("执行资源") {
                 row("CPU / RSS", (p.cpu.map { String(format: "%.2f%%", $0) } ?? "不可读") + " / " + bytes(p.memory))
                 row("线程 / 运行 / 优先级", number(p.detail?.threads) + " / " + number(p.detail?.runningThreads) + " / " + number(p.detail?.priority))
                 row("物理足迹 / 虚拟内存", bytes(p.detail?.footprint) + " / " + bytes(p.detail?.virtualBytes))
                 row("用户 / 内核 CPU 累计", seconds(p.detail?.userNS) + " / " + seconds(p.detail?.systemNS))
             }
-            terminalSection("IO + KERNEL / 内核计数") {
+            terminalSection("磁盘与内核") {
                 row("磁盘累计读 / 写", bytes(p.detail?.readBytes) + " / " + bytes(p.detail?.writtenBytes))
                 row("磁盘读 / 写速率", MetricsFormat.rate(p.readRate) + " / " + MetricsFormat.rate(p.writeRate))
                 row("缺页 / 页入 / 上下文切换", number(p.detail?.faults) + " / " + number(p.detail?.pageins) + " / " + number(p.detail?.switches))
@@ -421,7 +419,7 @@ struct AgentDetailsView: View {
         HStack(alignment: .top, spacing: 14) {
             Text(title).foregroundStyle(.secondary).frame(width: 106, alignment: .leading)
             Text(value).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-        }.font(.system(size: 10, design: .monospaced)).padding(.vertical, 9).textSelection(.enabled)
+        }.font(.system(size: 12)).padding(.vertical, 10).textSelection(.enabled)
             .overlay(alignment: .bottom) { Rectangle().fill(accent.opacity(0.08)).frame(height: 1) }
     }
     private func started(_ value: UInt64) -> String { Date(timeIntervalSince1970: Double(value) / 1e6).formatted(date: .numeric, time: .standard) }
@@ -477,18 +475,35 @@ enum AgentNeuralLayout {
     }
 }
 
+enum AgentGraphViewport {
+    static func scale(_ value: CGFloat) -> CGFloat { value.isFinite ? min(3.5, max(1, value)) : 1 }
+    static func offset(_ value: CGSize, scale: CGFloat, size: CGSize) -> CGSize {
+        let zoom = self.scale(scale)
+        let x = max(0, size.width) * (zoom - 1) / 2
+        let y = max(0, size.height) * (zoom - 1) / 2
+        return CGSize(width: value.width.isFinite ? min(x, max(-x, value.width)) : 0,
+                      height: value.height.isFinite ? min(y, max(-y, value.height)) : 0)
+    }
+}
+
 private struct AgentNeuralMap: View {
     let usage: AgentUsage
     let root: AgentProcessID
     let selected: AgentProcessID
     let accent: Color
     let live: Bool
+    @Binding var expanded: Bool
     let select: (AgentProcessID) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query = ""
     @State private var page = 0
     @State private var hovered: AgentProcessID?
     @State private var listMode = false
+    @State private var zoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @GestureState private var drag: CGSize = .zero
+    @GestureState private var pinch: CGFloat = 1
+    private var effectiveZoom: CGFloat { AgentGraphViewport.scale(zoom * pinch) }
     private var children: [AgentProcessUsage] { usage.processes.filter { $0.id != root }.sorted { $0.id.pid < $1.id.pid } }
     private var pages: Int { max(1, (children.count + 47) / 48) }
     private var effectivePage: Int { min(page, pages - 1) }
@@ -505,9 +520,11 @@ private struct AgentNeuralMap: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("PROCESS CONSTELLATION").font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.5).foregroundStyle(accent)
+                Text("进程网络").font(.system(size: 14, weight: .semibold)).foregroundStyle(accent)
                 Spacer()
                 Button(listMode ? "节点网络" : "进程列表") { listMode.toggle() }.buttonStyle(.plain).foregroundStyle(.secondary)
+                Button { expanded.toggle() } label: { Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") }
+                    .buttonStyle(.plain).accessibilityLabel(expanded ? "收起神经图" : "展开神经图").help(expanded ? "恢复详情布局" : "展开神经图")
             }.padding(.horizontal, 22).padding(.top, 18)
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(accent)
@@ -530,7 +547,7 @@ private struct AgentNeuralMap: View {
                     Button { page = min(pages - 1, effectivePage + 1) } label: { Image(systemName: "chevron.right") }.disabled(effectivePage == pages-1)
                 }
             }.font(.system(size: 9)).foregroundStyle(accent.opacity(0.9)).buttonStyle(.plain).padding(.horizontal, 22).padding(.bottom, 12)
-            Text("粒子随已采集的 CPU 活动变化 · 不代表思考、任务或网络传输")
+            Text("拖动移动 · 触控板捏合缩放 · 粒子仅表示 CPU 活动")
                 .font(.system(size: 9)).foregroundStyle(.secondary).padding(.bottom, 16)
         }.background(Color.black.opacity(0.12))
     }
@@ -538,23 +555,61 @@ private struct AgentNeuralMap: View {
                 GeometryReader { geometry in
                     let positions = AgentNeuralLayout.positions(visible, root: root, size: geometry.size)
                     let labeled = Set(visible.filter { $0.id != root }.sorted { ($0.memory ?? 0) > ($1.memory ?? 0) }.prefix(5).map { $0.id })
-                    ZStack {
-                        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || !live)) { timeline in
-                            Canvas { context, size in
-                                draw(&context, size: size, positions: positions, time: timeline.date.timeIntervalSinceReferenceDate)
-                            }
-                        }.allowsHitTesting(false).accessibilityHidden(true)
-                        ForEach(visible) { p in
-                            if let point = positions[p.id] {
-                                node(p, at: point, labeled: labeled.contains(p.id))
-                            }
-                        }
-                        if visible.count <= 1 {
-                            Text("当前只有根进程 · 暂无子进程").font(.system(size: 11)).foregroundStyle(.secondary)
-                                .position(x: geometry.size.width/2, y: geometry.size.height/2 + 110)
-                        }
-                    }
+                    ZStack(alignment: .bottomTrailing) {
+                        graphContent(size: geometry.size, positions: positions, labeled: labeled)
+                            .scaleEffect(effectiveZoom)
+                            .offset(AgentGraphViewport.offset(CGSize(width: pan.width + drag.width, height: pan.height + drag.height), scale: effectiveZoom, size: geometry.size))
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .contentShape(Rectangle())
+                            .simultaneousGesture(DragGesture(minimumDistance: 8)
+                                .updating($drag) { value, state, _ in state = value.translation }
+                                .onEnded { value in pan = AgentGraphViewport.offset(CGSize(width: pan.width + value.translation.width, height: pan.height + value.translation.height), scale: effectiveZoom, size: geometry.size) })
+                            .simultaneousGesture(MagnificationGesture()
+                                .updating($pinch) { value, state, _ in state = value }
+                                .onEnded { value in zoom = AgentGraphViewport.scale(zoom * value); pan = AgentGraphViewport.offset(pan, scale: zoom, size: geometry.size) })
+                            .clipped()
+                        zoomControls(size: geometry.size, positions: positions).padding(16)
+                    }.clipped()
                 }
+    }
+    private func graphContent(size: CGSize, positions: [AgentProcessID: CGPoint], labeled: Set<AgentProcessID>) -> some View {
+        ZStack {
+            TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || !live)) { timeline in
+                Canvas { context, size in draw(&context, size: size, positions: positions, time: timeline.date.timeIntervalSinceReferenceDate) }
+            }.allowsHitTesting(false).accessibilityHidden(true)
+            ForEach(visible) { p in
+                if let point = positions[p.id] { node(p, at: point, labeled: labeled.contains(p.id)) }
+            }
+            if visible.count <= 1 {
+                Text("当前只有根进程 · 暂无子进程").font(.system(size: 12)).foregroundStyle(.secondary)
+                    .position(x: size.width / 2, y: size.height / 2 + 110)
+            }
+        }.frame(width: size.width, height: size.height)
+    }
+    private func changeZoom(_ value: CGFloat, size: CGSize, focus: CGPoint? = nil) {
+        let next = AgentGraphViewport.scale(value)
+        let nextPan: CGSize
+        if let focus {
+            nextPan = CGSize(width: (size.width / 2 - focus.x) * next, height: (size.height / 2 - focus.y) * next)
+        } else { nextPan = CGSize(width: pan.width * next / zoom, height: pan.height * next / zoom) }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+            zoom = next; pan = AgentGraphViewport.offset(nextPan, scale: next, size: size)
+        }
+    }
+    private func zoomControls(size: CGSize, positions: [AgentProcessID: CGPoint]) -> some View {
+        HStack(spacing: 14) {
+            Button { changeZoom(zoom - 0.3, size: size) } label: { Image(systemName: "minus.magnifyingglass") }
+                .disabled(zoom <= 1).accessibilityLabel("缩小神经图")
+            Text("\(Int(effectiveZoom * 100))%").font(.system(size: 11)).monospacedDigit().frame(width: 38)
+            Button { changeZoom(zoom + 0.3, size: size) } label: { Image(systemName: "plus.magnifyingglass") }
+                .disabled(zoom >= 3.5).accessibilityLabel("放大神经图")
+            Divider().frame(height: 16)
+            Button { changeZoom(max(1.8, zoom), size: size, focus: positions[selected]) } label: { Image(systemName: "scope") }
+                .accessibilityLabel("放大选中节点").help("放大并居中选中的进程")
+            Button { changeZoom(1, size: size) } label: { Image(systemName: "arrow.counterclockwise") }
+                .accessibilityLabel("复位神经图").help("恢复 100% 并居中")
+        }.font(.system(size: 14)).foregroundStyle(accent).buttonStyle(.plain).padding(.horizontal, 14).padding(.vertical, 11)
+            .background(.ultraThinMaterial, in: Capsule()).overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 1))
     }
     private func draw(_ context: inout GraphicsContext, size: CGSize, positions: [AgentProcessID: CGPoint], time: TimeInterval) {
                                 let center = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -611,7 +666,7 @@ private struct AgentNeuralMap: View {
                                     Spacer()
                                     Text("#" + String(process.id.pid)).foregroundStyle(.secondary)
                                     Text(process.cpu.map { String(format: "%.1f%%", $0) } ?? "—").frame(width: 60, alignment: .trailing)
-                                }.font(.system(size: 11, design: .monospaced)).padding(12).background(selected == process.id ? accent.opacity(0.12) : Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+                                }.font(.system(size: 12)).padding(12).background(selected == process.id ? accent.opacity(0.12) : Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
                             }.buttonStyle(.plain)
                         }
                         if !usage.processes.contains(where: { matches($0) }) { Text("无匹配进程").foregroundStyle(.secondary).padding(30) }
@@ -625,9 +680,9 @@ private struct AgentNeuralMap: View {
             .accessibilityLabel(p.name + "，PID " + String(p.id.pid))
                                 if p.id != root && (labeled || p.id == selected || p.id == hovered) {
                                     VStack(spacing: 3) {
-                                        Text(p.name).font(.system(size: 9, weight: .medium)).lineLimit(1)
-                                        Text("#" + String(p.id.pid)).font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
-                                    }.frame(width: 100).padding(4).background(AgentsStyle.background.opacity(0.9), in: RoundedRectangle(cornerRadius: 5))
+                                        Text(p.name).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                                        Text("#" + String(p.id.pid)).font(.system(size: 9)).foregroundStyle(.secondary)
+                                    }.frame(width: 112).padding(6).background(AgentsStyle.background.opacity(0.9), in: RoundedRectangle(cornerRadius: 5))
                                         .position(x: point.x, y: point.y + radius(p) + 24).allowsHitTesting(false)
                                 }
     }

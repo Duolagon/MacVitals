@@ -216,9 +216,21 @@ func testNeuralGeometry() {
     XCTAssertEqual(Set(positions.values.map { "\($0.x),\($0.y)" }).count, nodes.count)
 }
 
+func testGraphViewport() {
+    XCTAssertEqual(AgentGraphViewport.scale(0.2), 1)
+    XCTAssertEqual(AgentGraphViewport.scale(10), 3.5)
+    XCTAssertEqual(AgentGraphViewport.scale(.nan), 1)
+    let size = CGSize(width: 600, height: 400)
+    XCTAssertEqual(AgentGraphViewport.offset(CGSize(width: 100, height: -100), scale: 1, size: size), .zero)
+    XCTAssertEqual(AgentGraphViewport.offset(CGSize(width: 10000, height: -10000), scale: 2, size: size), CGSize(width: 300, height: -200))
+    XCTAssertEqual(AgentGraphViewport.offset(CGSize(width: 80, height: -40), scale: 2, size: size), CGSize(width: 80, height: -40))
+    XCTAssertEqual(AgentGraphViewport.offset(CGSize(width: CGFloat.nan, height: CGFloat.infinity), scale: 2, size: size), .zero)
+}
+
 let tests = MetricsTests()
 let agentTests = AgentTests()
 let cases: [(String, () -> Void)] = [
+    ("Graph viewport / zoom limits and pan reset", testGraphViewport),
     ("Neural geometry / stable order and bounds", testNeuralGeometry),
     ("Agent recognition / false positives", agentTests.testRecognition),
     ("Nested agent aggregation", agentTests.testNestedSameAgentCountedOnce),
