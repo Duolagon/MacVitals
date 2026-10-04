@@ -17,16 +17,21 @@ final class MetricsTests {
         XCTAssertEqual(MetricsFormat.rate(0), "0.0 B/s")
         XCTAssertEqual(MetricsFormat.rate(1000), "1.0 KB/s")
         XCTAssertEqual(MetricsFormat.rate(Double.nan), "不可用")
-        let baseline = StatusBarText.title(download: 0, upload: 0).count
+        XCTAssertEqual(StatusBarText.title(download: 28000, upload: 3000), "↓ 28K ↑  3K")
+        XCTAssertEqual(StatusBarText.title(), "↓  —  ↑  — ")
         for value in [0.0, 9, 10, 99, 100, 999.94, 999.95, 1000, 1e6, 1e20] {
             XCTAssertEqual(MetricsFormat.compactRate(value).count, 8)
             XCTAssertEqual(MetricsFormat.menuRate(value).count, 4)
-            XCTAssertEqual(StatusBarText.title(download: value, upload: value).count, baseline)
+            let title = StatusBarText.title(download: value, upload: value)
+            XCTAssertTrue(StatusBarText.width(for: title) <= StatusBarText.width)
+            XCTAssertEqual(title.count, 11)
+            XCTAssertEqual(Array(title)[6], "↑")
         }
         XCTAssertEqual(MetricsFormat.compactRate(nil).count, 8)
         XCTAssertEqual(MetricsFormat.menuRate(nil).count, 4)
         XCTAssertEqual(MetricsFormat.menuRate(999.5), "  1K")
-        XCTAssertTrue(StatusBarText.width <= 250)
+        XCTAssertTrue(StatusBarText.width <= 110)
+        XCTAssertEqual(StatusBarText.width(for: StatusBarText.title(download: 28000, upload: 3000)), StatusBarText.width)
         XCTAssertEqual(StatusBarText.font.pointSize, 13)
         let interfaces = [
             NetworkInterfaceReading(name: "utun0", index: 1, address: "10.0.0.1", counters: .init(received: 0, sent: 0)),
@@ -374,6 +379,25 @@ func testSlowMetricCadence() {
     XCTAssertTrue(!cadence.shouldRefresh(at: .nan))
 }
 
+func testSecondaryMetricsRequireOpenPage() {
+    var diskCalls = 0, batteryCalls = 0
+    let monitor = Monitor(diskReader: { diskCalls += 1; return .init(available: 100, total: 200) },
+                          batteryReader: { batteryCalls += 1; return .init(percent: 75, charging: false, description: "75%") })
+    for time: Double in [0, 2, 4, 20, 60] {
+        let sample = monitor.sample(uptime: time, includeSecondary: false)
+        XCTAssertTrue(sample.memoryPercent != nil)
+        XCTAssertNil(sample.diskAvailableBytes); XCTAssertNil(sample.batteryPercent)
+        XCTAssertNil(sample.temperatureC); XCTAssertNil(sample.fanRPM)
+    }
+    XCTAssertEqual(diskCalls, 0); XCTAssertEqual(batteryCalls, 0)
+    _ = monitor.sample(uptime: 62, forceSlow: true, includeSecondary: true)
+    XCTAssertEqual(diskCalls, 1); XCTAssertEqual(batteryCalls, 1)
+    for time: Double in [64, 80, 100] { _ = monitor.sample(uptime: time, includeSecondary: false) }
+    XCTAssertEqual(diskCalls, 1); XCTAssertEqual(batteryCalls, 1)
+    _ = monitor.sample(uptime: 102, forceSlow: true, includeSecondary: true)
+    XCTAssertEqual(diskCalls, 2); XCTAssertEqual(batteryCalls, 2)
+}
+
 func testDetailsSamplingLifecycle() {
     var gate = DetailSamplingGate()
     XCTAssertNil(gate.begin())
@@ -400,12 +424,14 @@ final class FakeAgentSource: AgentProcessSource {
     var cpu: UInt64 = 0
     var metadataCalls: [AgentProcessID] = []
     var resourceCalls: [AgentProcessID] = []
+    var detailCalls: [AgentProcessID] = []
     func discover() -> [AgentProcessIdentity]? { readable ? identities : nil }
     func metadata(for identity: AgentProcessIdentity) -> AgentProcessMetadata? {
         metadataCalls.append(identity.id); return paths[identity.id]
     }
-    func resources(for identity: AgentProcessIdentity, metadata: AgentProcessMetadata) -> AgentProcessReading? {
+    func resources(for identity: AgentProcessIdentity, metadata: AgentProcessMetadata, includeDetails: Bool) -> AgentProcessReading? {
         resourceCalls.append(identity.id)
+        if includeDetails { detailCalls.append(identity.id) }
         return .init(pid: identity.id.pid, parent: identity.parent, started: identity.id.started,
                      name: metadata.name, executable: metadata.executable, entrypoint: metadata.entrypoint,
                      cpuNanoseconds: cpu, memory: 100, readBytes: cpu, writtenBytes: cpu)
@@ -483,6 +509,9 @@ func testNativeAgentDiscoveryAndIdentityGuard() {
     XCTAssertEqual(reading.id, own.id); XCTAssertTrue(!metadata.executable.isEmpty)
     XCTAssertTrue(reading.cpuNanoseconds != nil); XCTAssertTrue(reading.memory != nil)
     XCTAssertTrue(reading.detail?.threads != nil)
+    let summary = source.resources(for: own, metadata: metadata, includeDetails: false)!
+    XCTAssertTrue(summary.cpuNanoseconds != nil); XCTAssertTrue(summary.memory != nil)
+    XCTAssertNil(summary.detail?.threads); XCTAssertNil(summary.detail?.faults)
     let wrong = AgentProcessIdentity(id: .init(pid: own.id.pid, started: own.id.started + 1), parent: own.parent, uid: own.uid, status: own.status, name: own.name)
     XCTAssertNil(source.metadata(for: wrong)); XCTAssertNil(source.resources(for: wrong, metadata: metadata))
     let monitor = AgentMonitor()
@@ -491,6 +520,32 @@ func testNativeAgentDiscoveryAndIdentityGuard() {
     XCTAssertTrue(monitor.resourceReadCount < monitor.discoveryCount)
     _ = monitor.sample(desktops: [getpid(): .codex])
     XCTAssertTrue(monitor.metadataReadCount < monitor.discoveryCount)
+}
+
+func testAgentDetailsAndBaselineOnDemand() {
+    let source = FakeAgentSource()
+    let root = source.add(10, name: "codex", executable: "/bin/codex")
+    let child = source.add(11, parent: 10, name: "worker", executable: "/bin/worker")
+    _ = source.add(20, name: "claude", executable: "/bin/claude")
+    let monitor = AgentMonitor(source: source)
+    _ = monitor.sample(desktops: [:], uptime: 0, detailedInstances: [])
+    XCTAssertTrue(source.detailCalls.isEmpty)
+    source.cpu = 1_000_000_000
+    XCTAssertTrue(monitor.sample(desktops: [:], uptime: 2, detailedInstances: [root]).usages[0].cpu != nil)
+    XCTAssertEqual(Set(source.detailCalls), Set([root, child]))
+    source.resourceCalls.removeAll()
+    let selected = monitor.sample(desktops: [:], uptime: 3, detailedInstances: [root], instances: [root])
+    XCTAssertEqual(selected.usages.map(\.id), [root])
+    XCTAssertEqual(Set(source.resourceCalls), Set([root, child]))
+    source.detailCalls.removeAll()
+    _ = monitor.sample(desktops: [:], uptime: 4, detailedInstances: [])
+    XCTAssertTrue(source.detailCalls.isEmpty)
+    monitor.resetSamplingBaseline(); source.cpu = 100_000_000_000
+    let reopened = monitor.sample(desktops: [:], uptime: 100, detailedInstances: [])
+    XCTAssertTrue(reopened.usages.allSatisfy { $0.cpu == nil && $0.readRate == nil })
+    source.cpu += 1_000_000_000
+    let current = monitor.sample(desktops: [:], uptime: 102, detailedInstances: [])
+    XCTAssertEqual(current.usages.first { $0.id == root }?.cpu, 100)
 }
 
 func testWidgetSnapshotExchange() {
@@ -535,12 +590,36 @@ func testWidgetSnapshotExchange() {
 
 let tests = MetricsTests()
 let agentTests = AgentTests()
+func testPowerDemandLifecycle() {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("macvitals-demand-test-\(UUID().uuidString)")
+    let demand = PowerSamplingDemand(fileURL: file)
+    let now = ProcessInfo.processInfo.systemUptime
+    demand.renew(uptime: now)
+    XCTAssertTrue(!FileManager.default.fileExists(atPath: file.path))
+    demand.start()
+    do {
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        XCTAssertEqual((attributes[.posixPermissions] as! NSNumber).intValue, 0o600)
+        let modified = attributes[.modificationDate] as! Date
+        demand.renew(uptime: now + 1)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as! Date, modified)
+        demand.stop()
+        XCTAssertTrue(!FileManager.default.fileExists(atPath: file.path))
+        demand.renew(uptime: now + 25)
+        XCTAssertTrue(!FileManager.default.fileExists(atPath: file.path))
+        demand.start(); XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        demand.stop()
+    } catch { XCTFail("Power demand lease: \(error)") }
+}
 let cases: [(String, () -> Void)] = [
-    ("Widget snapshot / missing, valid, old, future and corrupt data", testWidgetSnapshotExchange),
+    ("Power demand / inactive, bounded renewal, private lease and stop", testPowerDemandLifecycle),
     ("Agent termination / instance scope and child-first order", testAgentTerminationScopeAndOrder),
     ("Agent termination / reuse, reparenting, ownership and failures", testAgentTerminationRejectsStaleAndUnownedTargets),
     ("Agent termination / native TERM and KILL on controlled children", testNativeAgentTerminationSignals),
+    ("Widget snapshot / missing, valid, old, future and corrupt data", testWidgetSnapshotExchange),
     ("System slow metrics / cadence, force refresh and failure", testSlowMetricCadence),
+    ("Secondary metrics / no reads while page closed", testSecondaryMetricsRequireOpenPage),
+    ("Agent details / selected instance only and fresh reopen baseline", testAgentDetailsAndBaselineOnDemand),
     ("Details sampling / close, minimize and stale jobs", testDetailsSamplingLifecycle),
     ("Agent selective resources / cache, discovery and recovery", testAgentSelectiveResourcesAndCache),
     ("Agent exec / native rename and interpreter replacement", testAgentExecAndInterpreterRefresh),

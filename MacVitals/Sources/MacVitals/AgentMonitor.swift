@@ -104,7 +104,9 @@ final class AgentMonitor {
     private(set) var resourceReadCount = 0
     init(source: AgentProcessSource = NativeAgentProcessSource()) { self.source = source }
 
-    func sample(desktops: [Int32: AgentKind], uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> AgentSnapshot {
+    func resetSamplingBaseline() { previous = [:]; io = CounterTracker(); lastTime = nil }
+
+    func sample(desktops: [Int32: AgentKind], uptime: TimeInterval = ProcessInfo.processInfo.systemUptime, detailedInstances: Set<AgentProcessID>? = nil, instances: Set<AgentProcessID>? = nil) -> AgentSnapshot {
         metadataReadCount = 0; resourceReadCount = 0; discoveryCount = 0
         guard let identities = source.discover() else {
             previous = [:]; io = CounterTracker(); lastTime = nil; metadataCache.removeAll()
@@ -129,11 +131,15 @@ final class AgentMonitor {
         }
         let parents = Dictionary(uniqueKeysWithValues: identities.map { ($0.id.pid, $0.parent) })
         let roots = AgentOwnership.roots(parents: parents, matches: matches)
+        let ids = Dictionary(uniqueKeysWithValues: identities.map { ($0.id.pid, $0.id) })
         var readings: [AgentProcessReading] = []
-        for identity in identities where AgentOwnership.owner(of: identity.id.pid, parents: parents, roots: roots) != nil {
+        for identity in identities {
+            guard let owner = AgentOwnership.owner(of: identity.id.pid, parents: parents, roots: roots) else { continue }
+            if let instances, let ownerID = ids[owner], !instances.contains(ownerID) { continue }
             resourceReadCount += 1
             let metadata = metadataCache[identity.id]?.metadata ?? .init(name: identity.name, executable: "", entrypoint: "")
-            if let reading = source.resources(for: identity, metadata: metadata) { readings.append(reading) }
+            let includeDetails = detailedInstances == nil || ids[owner].map { detailedInstances!.contains($0) } == true
+            if let reading = source.resources(for: identity, metadata: metadata, includeDetails: includeDetails) { readings.append(reading) }
         }
         return aggregate(readings, uptime: uptime, recognized: matches)
     }

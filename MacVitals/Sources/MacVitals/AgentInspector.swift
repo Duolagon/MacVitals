@@ -19,6 +19,7 @@ final class AgentInspectorSession: ObservableObject {
     }
     @Published var navigation: AgentInspectorNavigation
     @Published private(set) var capture: Capture?
+    @Published var visible = false
 
     init(navigation: AgentInspectorNavigation = .init()) { self.navigation = navigation }
 
@@ -52,6 +53,9 @@ final class AgentInspectorWindows: NSObject, NSWindowDelegate {
     private var saved: [AgentProcessID: AgentInspectorNavigation] = [:]
     private var recency: [AgentProcessID] = []
     private let limit: Int
+    var visibilityChanged: () -> Void = {}
+    var hasVisibleWindows: Bool { entries.values.contains { $0.window.isVisible && !$0.window.isMiniaturized } }
+    var visibleInstances: Set<AgentProcessID> { Set(entries.filter { $0.value.window.isVisible && !$0.value.window.isMiniaturized }.keys) }
 
     init(limit: Int = 32) { self.limit = max(0, limit); super.init() }
     func navigation(for id: AgentProcessID) -> AgentInspectorNavigation? { saved[id] }
@@ -73,7 +77,20 @@ final class AgentInspectorWindows: NSObject, NSWindowDelegate {
         window.contentViewController = nil
         window.delegate = nil
         entries.removeValue(forKey: id)
+        entry.session.visible = false
+        visibilityChanged()
     }
+
+    func refreshVisibility() {
+        for entry in entries.values {
+            let visible = entry.window.isVisible && !entry.window.isMiniaturized
+            if entry.session.visible != visible { entry.session.visible = visible }
+        }
+        visibilityChanged()
+    }
+    func windowDidMiniaturize(_ notification: Notification) { refreshVisibility() }
+    func windowDidDeminiaturize(_ notification: Notification) { refreshVisibility() }
+    func windowDidChangeOcclusionState(_ notification: Notification) { refreshVisibility() }
 
     func prune(active: Set<AgentProcessID>) {
         saved = saved.filter { active.contains($0.key) }

@@ -296,7 +296,7 @@ struct AgentDetailsView: View {
                 Rectangle().fill(accent.opacity(0.2)).frame(height: 1)
                 HStack(spacing: 0) {
                     AgentNeuralMap(usage: usage, root: instance, selected: session.navigation.selection ?? instance,
-                                   accent: accent, live: current != nil && model.latest.available, expanded: $session.navigation.expandedGraph, navigation: $session.navigation, standalone: networkWindow, openNetwork: openNetwork,
+                                   accent: accent, live: current != nil && model.latest.available && session.visible, expanded: $session.navigation.expandedGraph, navigation: $session.navigation, standalone: networkWindow, openNetwork: openNetwork,
                                    select: { session.navigation.selection = $0; session.navigation.expandedGraph = false })
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if !session.navigation.expandedGraph {

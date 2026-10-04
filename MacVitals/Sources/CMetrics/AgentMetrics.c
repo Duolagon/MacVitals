@@ -30,11 +30,11 @@ static void entrypoint(pid_t pid, char *out, size_t capacity) {
     } else if (*p == '-') return;
     snprintf(out, capacity, "%.*s", (int)n, p);
 }
-static void resources(MVAgentProcess *p) {
+static void resources(MVAgentProcess *p, int detailed) {
     mach_timebase_info_data_t timebase;
     if (mach_timebase_info(&timebase) != KERN_SUCCESS || !timebase.denom) return;
     struct proc_taskinfo task = {0};
-    if (proc_pidinfo(p->pid, PROC_PIDTASKINFO, 0, &task, sizeof(task)) == sizeof(task)) {
+    if (detailed && proc_pidinfo(p->pid, PROC_PIDTASKINFO, 0, &task, sizeof(task)) == sizeof(task)) {
         p->task_readable = 1; p->threads = task.pti_threadnum; p->running_threads = task.pti_numrunning; p->priority = task.pti_priority;
         p->virtual_bytes = task.pti_virtual_size; p->faults = (uint32_t)task.pti_faults; p->pageins = (uint32_t)task.pti_pageins; p->switches = (uint32_t)task.pti_csw;
     }
@@ -68,7 +68,7 @@ int mv_agent_processes(MVAgentProcess *out, int capacity) {
         proc_pidpath(p->pid, p->executable, sizeof(p->executable));
         const char *name = strrchr(p->executable, '/'); name = name ? name+1 : p->executable;
         if (strcmp(name, "node") == 0 || strcmp(name, "nodejs") == 0 || strncmp(name, "python", 6) == 0) entrypoint(p->pid, p->entrypoint, sizeof(p->entrypoint));
-        resources(p);
+        resources(p, 1);
     }
     free(pids); return used;
 }
@@ -115,7 +115,13 @@ int mv_agent_metadata(int32_t pid, uint64_t started, MVAgentProcess *out) {
 
 int mv_agent_resources(int32_t pid, uint64_t started, MVAgentProcess *out) {
     if (!identity(pid, started, out)) return 0;
-    resources(out);
+    resources(out, 1);
+    return 1;
+}
+
+int mv_agent_summary(int32_t pid, uint64_t started, MVAgentProcess *out) {
+    if (!identity(pid, started, out)) return 0;
+    resources(out, 0);
     return 1;
 }
 

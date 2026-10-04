@@ -3,17 +3,17 @@ import SwiftUI
 import Darwin
 
 /// Independent status item, lifecycle, sampling timer and background queue.
-final class AgentsController: NSObject, NSPopoverDelegate {
+final class AgentsController: NSObject, NSPopoverDelegate, NSWindowDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: 56)
     private let popover = NSPopover()
     private let model = AgentsModel()
     private let sampler = AgentMonitor()
     private let queue = DispatchQueue(label: "local.macvitals.agents", qos: .utility)
     private var timer: Timer?
-    private var busy = false
+    private var sampling = DetailSamplingGate()
+    private var resetPending = false
     private var running = true
-    private var clickMonitor: Any?, localMonitor: Any?
-    private var resignObserver: NSObjectProtocol?
+    private var localMonitor: Any?
     private var previewWindow: NSWindow?
     private let detailWindows = AgentInspectorWindows()
     private let networkWindows = AgentInspectorWindows()
@@ -32,14 +32,16 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         item.button?.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold)
         item.button?.title = " —"
         item.button?.target = self; item.button?.action = #selector(toggle)
-        popover.behavior = .transient; popover.delegate = self
+        popover.behavior = .transient
+        popover.delegate = self
         popover.contentSize = NSSize(width: 440, height: AgentsStyle.height)
-        configureView()
-        startTimer(); sample()
+        detailWindows.visibilityChanged = { [weak self] in self?.refreshSamplingActivity() }
+        networkWindows.visibilityChanged = { [weak self] in self?.refreshSamplingActivity() }
+        refreshSamplingActivity()
     }
     private func configureView() {
-        popover.contentViewController = NSHostingController(rootView: view())
-        previewWindow?.contentViewController = NSHostingController(rootView: view())
+        if popover.isShown { popover.contentViewController = NSHostingController(rootView: view()) }
+        if previewWindow?.isVisible == true { previewWindow?.contentViewController = NSHostingController(rootView: view()) }
     }
     private func view() -> AgentsView {
         AgentsView(model: model, interval: interval, setInterval: { [weak self] value in
@@ -50,20 +52,30 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     }
     private func startTimer() {
         timer?.invalidate()
+        guard sampling.active else { return }
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.sample() }
         RunLoop.main.add(timer, forMode: .common); self.timer = timer
     }
     private func sample() {
-        guard running, !busy else { return }
-        busy = true
+        guard running, let generation = sampling.begin() else { return }
+        let reset = resetPending; resetPending = false
         let desktops = AgentRecognition.desktops()
+        let diagnostic = CommandLine.arguments.contains("--export-agent-details") || (!didPreviewDetails && CommandLine.arguments.contains("--preview-agent-details"))
+        let detailedInstances = diagnostic ? nil : detailWindows.visibleInstances.union(networkWindows.visibleInstances)
+        let listVisible = popover.isShown || (previewWindow?.isVisible == true && previewWindow?.isMiniaturized != true)
+        let instances = diagnostic || listVisible ? nil : detailedInstances
         queue.async { [weak self] in
             guard let self else { return }
-            let snapshot = self.sampler.sample(desktops: desktops)
+            if reset { self.sampler.resetSamplingBaseline() }
+            let snapshot = self.sampler.sample(desktops: desktops, detailedInstances: detailedInstances, instances: instances)
+            if CommandLine.arguments.contains("--sampling-probe") {
+                print("sampling agent discover=\(self.sampler.discoveryCount) resources=\(self.sampler.resourceReadCount) details=\(detailedInstances?.count.description ?? "diagnostic")")
+                fflush(stdout)
+            }
             DispatchQueue.main.async {
-                self.busy = false; guard self.running else { return }
+                guard self.sampling.finish(generation), self.running else { return }
                 self.model.record(snapshot)
-                if snapshot.available {
+                if snapshot.available && instances == nil {
                     let active = Set(snapshot.usages.map { $0.id })
                     self.detailWindows.prune(active: active); self.networkWindows.prune(active: active)
                 }
@@ -90,41 +102,60 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     @objc private func toggle() {
         guard let button = item.button else { return }
         if popover.isShown { popover.performClose(nil); return }
+        popover.contentViewController = NSHostingController(rootView: view())
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
+        refreshSamplingActivity()
         stopDismissMonitoring()
-        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in self?.popover.performClose(nil) }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
-            guard let self else { return event }
-            if event.type == .keyDown {
-                if event.keyCode == 53 { self.popover.performClose(nil); return nil }
-            } else if event.window !== self.popover.contentViewController?.view.window {
-                let ownButton: Bool
-                if let button = self.item.button, event.window === button.window {
-                    ownButton = button.bounds.contains(button.convert(event.locationInWindow, from: nil))
-                } else { ownButton = false }
-                if !ownButton { self.popover.performClose(nil) }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard let self, self.popover.isShown else { return event }
+            if event.keyCode == 53, event.window === self.popover.contentViewController?.view.window {
+                self.popover.performClose(nil)
+                return nil
             }
             return event
         }
-        resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: NSApp, queue: .main) { [weak self] _ in self?.popover.performClose(nil) }
+    }
+    func popoverDidClose(_ notification: Notification) {
+        stopDismissMonitoring(); popover.contentViewController = nil
+        refreshSamplingActivity()
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === previewWindow else { return }
+        window.contentViewController = nil; window.delegate = nil; previewWindow = nil
+        refreshSamplingActivity()
+    }
+    func windowDidMiniaturize(_ notification: Notification) { refreshSamplingActivity() }
+    func windowDidDeminiaturize(_ notification: Notification) { refreshSamplingActivity() }
+    func windowDidChangeOcclusionState(_ notification: Notification) { refreshSamplingActivity() }
+    private func refreshSamplingActivity() {
+        guard running else { return }
+        let diagnostic = CommandLine.arguments.contains("--export-agent-details") || (!didPreviewDetails && CommandLine.arguments.contains("--preview-agent-details"))
+        let visible = popover.isShown || (previewWindow?.isVisible == true && previewWindow?.isMiniaturized != true)
+            || detailWindows.hasVisibleWindows || networkWindows.hasVisibleWindows || diagnostic
+        if visible {
+            if sampling.resume() { resetPending = true; startTimer(); sample() }
+        } else {
+            sampling.pause(); timer?.invalidate(); timer = nil
+            item.button?.title = " —"
+            item.button?.toolTip = "Agent Monitor · 面板关闭时暂停采样，点击恢复"
+        }
     }
     private func stopDismissMonitoring() {
-        if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
-        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
-        clickMonitor = nil; localMonitor = nil; resignObserver = nil
+        localMonitor = nil
     }
-    func popoverDidClose(_ notification: Notification) { stopDismissMonitoring() }
     func showPreview() {
         if previewWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: AgentsStyle.height), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "MacVitals · Agent Monitor"
+            window.delegate = self
             window.isReleasedWhenClosed = false; window.contentViewController = NSHostingController(rootView: view())
             window.center(); previewWindow = window
         }
         NSApp.activate(ignoringOtherApps: true); previewWindow?.makeKeyAndOrderFront(nil)
+        refreshSamplingActivity()
     }
     private func inspectorSession(_ windows: AgentInspectorWindows, id: AgentProcessID, selected: AgentProcessID? = nil) -> AgentInspectorSession {
         let session = AgentInspectorSession(navigation: windows.navigation(for: id) ?? .init())
@@ -133,16 +164,17 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         return session
     }
     private func showDetails(_ id: AgentProcessID) {
+        popover.performClose(nil)
         if detailWindows.entries[id] == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 820), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             let session = inspectorSession(detailWindows, id: id)
             window.title = "Agent 详情 · PID \(id.pid)"
             window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id, session: session, openNetwork: { [weak self] node in self?.showNetwork(id, selected: node) },
                 terminate: { [weak self] request in self?.requestTermination(request) }))
             window.center(); detailWindows.insert(window, session: session, for: id)
         }
-        popover.performClose(nil)
         NSApp.activate(ignoringOtherApps: true); detailWindows.entries[id]?.window.makeKeyAndOrderFront(nil)
+        detailWindows.refreshVisibility()
     }
     private func showNetwork(_ id: AgentProcessID, selected node: AgentProcessID? = nil) {
         popover.performClose(nil)
@@ -166,6 +198,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
             window.center(); networkWindows.insert(window, session: session, for: id)
         }
         NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        networkWindows.refreshVisibility()
     }
     private func requestTermination(_ request: AgentTerminationRequest) {
         guard !model.controlBusy, model.latest.available,
@@ -237,7 +270,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     }
     var menuBarIsVisible: Bool { item.isVisible }
     func stop() {
-        running = false; timer?.invalidate(); timer = nil
+        running = false; sampling.pause(); timer?.invalidate(); timer = nil
         popover.performClose(nil); stopDismissMonitoring()
         detailWindows.closeAll()
         networkWindows.closeAll()

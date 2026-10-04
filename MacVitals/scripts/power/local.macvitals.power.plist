@@ -3,7 +3,7 @@
 <plist version="1.0"><dict>
 <key>Label</key><string>local.macvitals.power</string>
 <key>ProgramArguments</key><array><string>/bin/sh</string><string>/Library/PrivilegedHelperTools/local.macvitals.collect-power.sh</string></array>
-<key>StartInterval</key><integer>5</integer>
+<key>StartInterval</key><integer>30</integer>
 <key>ThrottleInterval</key><integer>1</integer>
 <key>RunAtLoad</key><true/>
 <key>StandardOutPath</key><string>/dev/null</string>

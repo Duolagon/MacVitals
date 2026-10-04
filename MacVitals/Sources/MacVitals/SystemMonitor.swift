@@ -44,7 +44,7 @@ final class Monitor {
         slowCadence = SampleCadence(interval: slowInterval)
         self.diskReader = diskReader; self.batteryReader = batteryReader
     }
-    func sample(uptime: TimeInterval = ProcessInfo.processInfo.systemUptime, forceSlow: Bool = false) -> Snapshot {
+    func sample(uptime: TimeInterval = ProcessInfo.processInfo.systemUptime, forceSlow: Bool = false, includeSecondary: Bool = true) -> Snapshot {
         var s = Snapshot()
         var info = host_cpu_load_info()
         var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
@@ -76,10 +76,12 @@ final class Monitor {
             s.memoryPercent = min(100, Double(used) / Double(total) * 100)
             s.memory = "\(bytes(used)) / \(bytes(total))（\(Int(s.memoryPercent ?? 0))%）"
         }
-        var swap = xsw_usage(); var swapSize = MemoryLayout<xsw_usage>.size
-        if sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0 {
-            s.swap = swap.xsu_used == 0 ? "0 B（未使用）" : MetricsFormat.bytes(swap.xsu_used)
-            s.swapAllocated = MetricsFormat.bytes(swap.xsu_total)
+        if includeSecondary {
+            var swap = xsw_usage(); var swapSize = MemoryLayout<xsw_usage>.size
+            if sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0 {
+                s.swap = swap.xsu_used == 0 ? "0 B（未使用）" : MetricsFormat.bytes(swap.xsu_used)
+                s.swapAllocated = MetricsFormat.bytes(swap.xsu_total)
+            }
         }
         let networkReading = network.sample()
         s.networkInterface = networkReading.interface
@@ -87,6 +89,7 @@ final class Monitor {
         s.networkIPv6 = networkReading.ipv6
         s.downloadBytesPerSecond = networkReading.download
         s.uploadBytesPerSecond = networkReading.upload
+        guard includeSecondary else { return s }
         if slowCadence.shouldRefresh(at: uptime, force: forceSlow) {
             slow = Snapshot()
             if let disk = diskReader() {

@@ -14,6 +14,8 @@ macOS 14 及以上支持原生桌面小组件，提供 CPU / 内存环形仪表�
 
 <img src="MacVitals/assets/screenshots/widget-telemetry.png" width="400" alt="MacVitals 原生桌面组件">
 
+CPU、内存、网速固定每 2 秒采集；其他系统与 Agent 指标仅在对应页面打开且未最小化时采集。Agent 支持确认后结束实例或选中进程；芯片功耗服务也采用按需采样。
+
 需要 macOS 13 或以上版本，以及 Apple Command Line Tools。
 
 ```sh

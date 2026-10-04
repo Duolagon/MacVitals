@@ -16,7 +16,12 @@ struct AgentProcessMetadata: Equatable {
 protocol AgentProcessSource {
     func discover() -> [AgentProcessIdentity]?
     func metadata(for identity: AgentProcessIdentity) -> AgentProcessMetadata?
-    func resources(for identity: AgentProcessIdentity, metadata: AgentProcessMetadata) -> AgentProcessReading?
+    func resources(for identity: AgentProcessIdentity, metadata: AgentProcessMetadata, includeDetails: Bool) -> AgentProcessReading?
+}
+extension AgentProcessSource {
+    func resources(for identity: AgentProcessIdentity, metadata: AgentProcessMetadata) -> AgentProcessReading? {
+        resources(for: identity, metadata: metadata, includeDetails: true)
+    }
 }
 
 final class NativeAgentProcessSource: AgentProcessSource {
@@ -41,9 +46,10 @@ final class NativeAgentProcessSource: AgentProcessSource {
         guard mv_agent_metadata(identity.id.pid, identity.id.started, &p) != 0 else { return nil }
         return AgentProcessMetadata(name: string(&p.name), executable: string(&p.executable), entrypoint: string(&p.entrypoint))
     }
-    func resources(for identity: AgentProcessIdentity, metadata: AgentProcessMetadata) -> AgentProcessReading? {
+    func resources(for identity: AgentProcessIdentity, metadata: AgentProcessMetadata, includeDetails: Bool) -> AgentProcessReading? {
         var p = MVAgentProcess()
-        guard mv_agent_resources(identity.id.pid, identity.id.started, &p) != 0 else { return nil }
+        let result = includeDetails ? mv_agent_resources(identity.id.pid, identity.id.started, &p) : mv_agent_summary(identity.id.pid, identity.id.started, &p)
+        guard result != 0 else { return nil }
         return .init(pid: p.pid, parent: identity.parent, started: p.started,
                      name: metadata.name.isEmpty ? identity.name : metadata.name,
                      executable: metadata.executable, entrypoint: metadata.entrypoint,

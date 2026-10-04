@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var detailsTimer: Timer?
     private var detailsSampling = DetailSamplingGate()
     private var detailsNeedsReset = false
+    private let powerDemand = PowerSamplingDemand()
     private let menu = NSMenu()
     private let interval: Double = 2
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -129,7 +130,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         RunLoop.main.add(t, forMode: .common); timer = t
     }
     private func update(forceSlow: Bool = false) {
-        let s = monitor.sample(forceSlow: forceSlow)
+        let windows = [previewWindow, widgetDashboardWindow, detailsWindow].compactMap { $0 }
+        let visible = popover.isShown || windows.contains { $0.isVisible && !$0.isMiniaturized }
+        let s = monitor.sample(forceSlow: forceSlow, includeSecondary: visible || forceSlow)
+        if CommandLine.arguments.contains("--sampling-probe") {
+            print("sampling system primary=cpu,memory,network secondary=\(visible || forceSlow) details=\(detailsSampling.active)")
+            fflush(stdout)
+        }
         item.button?.image = nil
         let title = StatusBarText.title(download: s.downloadBytesPerSecond, upload: s.uploadBytesPerSecond)
         item.button?.title = title
@@ -142,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard detailsWindow?.isVisible == true, detailsWindow?.isMiniaturized == false,
               detailsSampling.resume() else { return }
         detailsNeedsReset = true
+        powerDemand.start()
         dashboard.details = []
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.updateDetails() }
         RunLoop.main.add(timer, forMode: .common); detailsTimer = timer
@@ -154,9 +162,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
     }
     private func stopDetailsSampling() {
+        powerDemand.stop()
         detailsSampling.pause(); detailsTimer?.invalidate(); detailsTimer = nil
     }
     private func updateDetails() {
+        powerDemand.renew()
         guard let token = detailsSampling.begin() else { return }
         let reset = detailsNeedsReset; detailsNeedsReset = false
         let snapshot = dashboard.latest
@@ -283,7 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     @objc private func openActivity() { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
     @objc private func quit() { NSApplication.shared.terminate(nil) }
-    func applicationWillTerminate(_ notification: Notification) { agentsController?.stop(); stopDismissMonitoring(); timer?.invalidate(); detailsTimer?.invalidate() }
+    func applicationWillTerminate(_ notification: Notification) { powerDemand.stop(); agentsController?.stop(); stopDismissMonitoring(); timer?.invalidate(); detailsTimer?.invalidate() }
 }
 if CommandLine.arguments.contains("--agents-diagnose") {
     let m = AgentMonitor(); let desktops = AgentRecognition.desktops()
