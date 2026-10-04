@@ -7,6 +7,7 @@ import ServiceManagement
 import CMetrics
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    private var agentsController: AgentsController?
     private var item: NSStatusItem!
     private var timer: Timer?
     private let monitor = Monitor()
@@ -49,6 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 MacVitals", action: #selector(quit), keyEquivalent: "q"); quit.target = self; menu.addItem(quit)
         update(); startTimer()
+        agentsController = AgentsController()
+        if CommandLine.arguments.contains("--preview-agents") { agentsController?.showPreview() }
         if CommandLine.arguments.contains("--status-layout-diagnose") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 guard let self, let button = self.item.button, let window = button.window else {
@@ -56,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 }
                 print("status frame: \(window.convertToScreen(button.convert(button.bounds, to: nil)))")
                 print("status title: \(button.title)")
+                print(self.agentsController?.layoutDescription() ?? "agent module unavailable")
                 for screen in NSScreen.screens {
                     print("screen: \(screen.frame), visible: \(screen.visibleFrame)")
                     print("menu right area: \(String(describing: screen.auxiliaryTopRightArea)), left area: \(String(describing: screen.auxiliaryTopLeftArea))")
@@ -205,9 +209,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     @objc private func openActivity() { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
     @objc private func quit() { NSApplication.shared.terminate(nil) }
-    func applicationWillTerminate(_ notification: Notification) { stopDismissMonitoring(); timer?.invalidate(); detailsTimer?.invalidate() }
+    func applicationWillTerminate(_ notification: Notification) { agentsController?.stop(); stopDismissMonitoring(); timer?.invalidate(); detailsTimer?.invalidate() }
 }
-if CommandLine.arguments.contains("--sensors") {
+if CommandLine.arguments.contains("--agents-diagnose") {
+    let m = AgentMonitor(); let desktops = AgentRecognition.desktops()
+    _ = m.sample(desktops: desktops); Thread.sleep(forTimeInterval: 1)
+    let snapshot = m.sample(desktops: AgentRecognition.desktops())
+    print("Agents: \(snapshot.usages.count) · available \(snapshot.available)")
+    for usage in snapshot.usages {
+        print("\(usage.kind.rawValue) PID \(usage.id.pid) · \(usage.processes.count) processes · CPU \(usage.cpu.map { String(format: "%.1f%%", $0) } ?? "sampling") · RSS \(usage.memory.map { MetricsFormat.bytes($0) } ?? "unavailable") · read \(MetricsFormat.rate(usage.readRate)) · write \(MetricsFormat.rate(usage.writeRate))")
+    }
+} else if CommandLine.arguments.contains("--sensors") {
     exit(Int32(mv_smc_dump()))
 } else if CommandLine.arguments.contains("--details-diagnose") {
     let m = Monitor(); let details = DetailsMonitor(); _ = details.sample(m.sample()); Thread.sleep(forTimeInterval: 1)

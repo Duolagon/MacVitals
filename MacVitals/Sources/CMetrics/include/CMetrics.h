@@ -11,3 +11,5 @@ int mv_network(MVNetwork *out, int capacity);
 int mv_processes(MVProcess *out, int capacity);
 int mv_smc_key_count(void);
 int mv_smc_key_at(int index, char *key);
+
+#include "AgentMetrics.h"

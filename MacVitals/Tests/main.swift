@@ -107,8 +107,97 @@ final class MetricsTests {
     }
 }
 
+final class AgentTests {
+    private func process(_ pid: Int32, parent: Int32 = 1, started: UInt64 = 1, executable: String = "/bin/worker",
+                         cpu: UInt64? = 0, memory: UInt64? = 100, io: UInt64? = 0) -> AgentProcessReading {
+        .init(pid: pid, parent: parent, started: started, name: "process", executable: executable, entrypoint: "",
+              cpuNanoseconds: cpu, memory: memory, readBytes: io, writtenBytes: io)
+    }
+    func testRecognition() {
+        for (path, script, kind) in [
+            ("/bin/codex", "", AgentKind.codex), ("/bin/claude.exe", "", .claude),
+            ("/bin/node", "/opt/node_modules/@google/gemini-cli/dist/index.js", .gemini),
+            ("/bin/opencode", "", .opencode), ("/bin/cursor-agent", "", .cursor),
+            ("/bin/python3.13", "aider", .aider),
+            ("/bin/node", "/opt/node_modules/@anthropic-ai/claude-code/cli.js", .claude),
+            ("/bin/node", "/opt/node_modules/@openai/codex/bin/codex.js", .codex),
+            ("/bin/node", "/opt/node_modules/opencode-ai/bin/opencode", .opencode)
+        ] { XCTAssertEqual(AgentRecognition.kind(executable: path, entrypoint: script), kind) }
+        XCTAssertNil(AgentRecognition.kind(executable: "/usr/libexec/UserEventAgent", entrypoint: ""))
+        XCTAssertNil(AgentRecognition.kind(executable: "/System/CursorUIViewService", entrypoint: ""))
+        XCTAssertNil(AgentRecognition.kind(executable: "/tmp/agent", entrypoint: ""))
+        XCTAssertNil(AgentRecognition.kind(executable: "/bin/node", entrypoint: "/tmp/not-codex.js"))
+    }
+    func testNestedSameAgentCountedOnce() {
+        let m = AgentMonitor()
+        let first = [process(10, executable: "/Applications/ChatGPT"),
+                     process(11, parent: 10, executable: "/bin/codex", memory: 200),
+                     process(12, parent: 11, memory: 300), process(20)]
+        let a = m.aggregate(first, desktops: [10: .codex], uptime: 1)
+        XCTAssertEqual(a.usages.count, 1); XCTAssertEqual(a.usages[0].processes.count, 3)
+        XCTAssertEqual(a.usages[0].memory, 600); XCTAssertNil(a.usages[0].cpu)
+        let second = [process(10, executable: "/Applications/ChatGPT", cpu: 100_000_000),
+                      process(11, parent: 10, executable: "/bin/codex", cpu: 200_000_000, memory: 200),
+                      process(12, parent: 11, cpu: 200_000_000, memory: 300), process(20)]
+        let b = m.aggregate(second, desktops: [10: .codex], uptime: 3)
+        XCTAssertEqual(b.usages[0].cpu ?? -1, 25, accuracy: 0.001)
+        XCTAssertTrue(!b.usages[0].partial)
+    }
+    func testDifferentAgentsDoNotDoubleCountChildren() {
+        let m = AgentMonitor()
+        let snapshot = m.aggregate([process(1, parent: 0, executable: "/bin/codex", memory: 100),
+                                    process(2, parent: 1, executable: "/bin/claude", memory: 200),
+                                    process(3, parent: 2, memory: 300)], uptime: 1)
+        XCTAssertEqual(snapshot.usages.count, 2)
+        XCTAssertEqual(snapshot.totalMemory, 600)
+        XCTAssertEqual(snapshot.usages.first { $0.kind == .codex }?.processes.count, 1)
+        XCTAssertEqual(snapshot.usages.first { $0.kind == .claude }?.processes.count, 2)
+    }
+    func testPIDReuseAndExitDoNotCreateSpikes() {
+        let m = AgentMonitor()
+        _ = m.aggregate([process(42, executable: "/bin/codex", cpu: 9_000_000_000, io: 9_000_000_000)], uptime: 1)
+        let next = m.aggregate([process(42, started: 2, executable: "/bin/codex", cpu: 10_000_000_000, io: 10_000_000_000)], uptime: 3)
+        XCTAssertNil(next.usages[0].cpu); XCTAssertNil(next.usages[0].readRate)
+        XCTAssertEqual(m.aggregate([], uptime: 5).usages.count, 0)
+        XCTAssertNil(m.aggregate([process(42, started: 3, executable: "/bin/codex")], uptime: 7).usages[0].cpu)
+    }
+    func testMissingResourcesRemainUnavailable() {
+        let snapshot = AgentMonitor().aggregate([process(42, executable: "/bin/codex", cpu: nil, memory: nil, io: nil)], uptime: 1)
+        XCTAssertNil(snapshot.usages[0].memory); XCTAssertNil(snapshot.usages[0].cpu)
+        XCTAssertNil(snapshot.usages[0].readRate); XCTAssertTrue(snapshot.usages[0].partial)
+    }
+    func testNativeMetadataAndCPU() {
+        func own() -> MVAgentProcess {
+            var buffer = [MVAgentProcess](repeating: MVAgentProcess(), count: 4096)
+            let count = mv_agent_processes(&buffer, Int32(buffer.count))
+            guard count > 0, let p = buffer.prefix(Int(count)).first(where: { $0.pid == getpid() }) else { XCTFail("Own agent metadata unavailable"); return MVAgentProcess() }
+            return p
+        }
+        let before = own(); XCTAssertEqual(before.parent, getppid())
+        XCTAssertEqual(before.readable, 1); XCTAssertTrue(before.started > 0)
+        var usage = rusage(); XCTAssertEqual(getrusage(RUSAGE_SELF, &usage), 0)
+        let start = Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6
+        let until = ProcessInfo.processInfo.systemUptime + 0.15
+        var checksum: UInt64 = 0
+        while ProcessInfo.processInfo.systemUptime < until { checksum = checksum &* 1664525 &+ 1013904223 }
+        XCTAssertNotEqual(checksum, 0)
+        XCTAssertEqual(getrusage(RUSAGE_SELF, &usage), 0)
+        let end = Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6
+        let after = own(); XCTAssertEqual(after.started, before.started)
+        XCTAssertEqual(Double(after.cpu_ns - before.cpu_ns) / 1e9, end - start, accuracy: 0.03)
+        XCTAssertTrue(after.resident > 0)
+    }
+}
+
 let tests = MetricsTests()
+let agentTests = AgentTests()
 let cases: [(String, () -> Void)] = [
+    ("Agent recognition / false positives", agentTests.testRecognition),
+    ("Nested agent aggregation", agentTests.testNestedSameAgentCountedOnce),
+    ("Different agent ownership", agentTests.testDifferentAgentsDoNotDoubleCountChildren),
+    ("Agent PID reuse / exit", agentTests.testPIDReuseAndExitDoNotCreateSpikes),
+    ("Agent unreadable resources", agentTests.testMissingResourcesRemainUnavailable),
+    ("Agent native metadata / CPU units", agentTests.testNativeMetadataAndCPU),
     ("Swap / rate formatting and primary interface", tests.testFormattingAndInterfaceSelection),
     ("Counter reset / interface replacement", tests.testCounterResetAndInterfaceReplacement),
     ("Disk hotplug", tests.testDiskHotplugDoesNotCountHistoricalTraffic),
