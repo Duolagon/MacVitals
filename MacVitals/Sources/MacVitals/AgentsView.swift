@@ -252,85 +252,213 @@ struct AgentDetailsView: View {
     @State private var lastKnown: AgentUsage?
     private var current: AgentUsage? { model.latest.usages.first { $0.id == instance } }
     private var usage: AgentUsage? { current ?? lastKnown }
+    @State private var selection: AgentProcessID?
+    private var accent: Color { usage?.kind == .claude ? AgentsStyle.purple : AgentsStyle.cyan }
+    private var selected: AgentProcessUsage? {
+        guard let usage else { return nil }
+        return usage.processes.first { $0.id == (selection ?? instance) } ?? usage.processes.first { $0.id == instance } ?? usage.processes.first
+    }
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text((usage?.kind.rawValue.uppercased() ?? "AGENT") + " // INSPECTOR")
-                        .font(.system(size: 20, weight: .bold, design: .monospaced)).foregroundStyle(AgentsStyle.cyan)
-                    Text("ROOT #\(instance.pid) · PROCESS TREE TELEMETRY").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(!model.latest.available ? "读取失败 · 保留快照" : current == nil ? "实例已退出 · 最后快照" : "LIVE / \(model.latest.time.formatted(date: .omitted, time: .standard))")
-                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(AgentsStyle.green)
-            }
-            TextField("搜索进程名、PID、路径", text: $query).textFieldStyle(.roundedBorder)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if let usage {
-                        GroupBox("INSTANCE / 实例汇总") {
-                            VStack(spacing: 0) {
+        VStack(spacing: 0) {
+            header
+            if let usage {
+                HStack(spacing: 12) {
+                    instrument("01 / COMPUTE", value: usage.cpu.map { String(format: "%.1f%%", $0) } ?? "—",
+                               caption: usage.cpu.map { String(format: "整机 %.2f%% · 单核 100%%", $0 / Double(max(1, ProcessInfo.processInfo.activeProcessorCount))) } ?? "等待采样基线", channel: 0)
+                    instrument("02 / MEMORY", value: bytes(usage.memory), caption: "RSS 合计 / 共享页可能重复", channel: 1)
+                    instrument("03 / DISK RX", value: MetricsFormat.rate(usage.readRate), caption: "磁盘读取 / BYTES·SEC", channel: 2)
+                    instrument("04 / DISK TX", value: MetricsFormat.rate(usage.writeRate), caption: "磁盘写入 / BYTES·SEC", channel: 3)
+                }.padding(16)
+                Rectangle().fill(accent.opacity(0.2)).frame(height: 1)
+                HStack(spacing: 0) {
+                    processNavigation(usage).frame(width: 270)
+                    Rectangle().fill(accent.opacity(0.2)).frame(width: 1)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            if let selected {
+                                HStack(spacing: 10) {
+                                    AgentSigil(seed: selected.id == instance ? 0 : 1, color: accent).frame(width: 34, height: 34)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(selected.name.uppercased()).font(.system(size: 16, weight: .bold, design: .monospaced)).lineLimit(1)
+                                        Text("NODE #" + String(selected.id.pid) + " / " + (selected.id == instance ? "ROOT PROCESS" : "CHILD PROCESS"))
+                                            .font(.system(size: 9, design: .monospaced)).tracking(1).foregroundStyle(accent)
+                                    }
+                                    Spacer()
+                                    Text(selected.cpu.map { String(format: "%.1f%%", $0) } ?? "—")
+                                        .font(.system(size: 25, weight: .light, design: .monospaced)).foregroundStyle(accent).monospacedDigit()
+                                }
+                                processDetails(selected)
+                            }
+                            terminalSection("INSTANCE / 根实例") {
                                 row("启动时间", started(instance.started))
                                 row("运行时长", duration(max(0, model.latest.time.timeIntervalSince1970 - Double(instance.started) / 1e6)))
-                                row("进程数 / 线程数", "\(usage.processes.count) / \(usage.processes.compactMap { $0.detail?.threads }.reduce(0, +))（可读项合计）")
-                                row("CPU / 整机占比", usage.cpu.map { String(format: "%.2f%% / %.2f%%", $0, $0 / Double(max(1, ProcessInfo.processInfo.activeProcessorCount))) } ?? "建立基线 / 不可读")
-                                row("RSS / 物理足迹合计", bytes(usage.memory) + " / " + sum(usage.processes.compactMap { $0.detail?.footprint }))
-                                row("磁盘读 / 写速率", MetricsFormat.rate(usage.readRate) + " / " + MetricsFormat.rate(usage.writeRate))
-                                row("采样覆盖", usage.partial ? "部分指标缺失或新进程正在建立基线" : "CPU 与 RSS 已覆盖所有成员")
-                            }.padding(8)
-                        }
-                        Text("PROCESS TREE / 按父子关系排列，展开查看每个进程")
-                            .font(.system(size: 10, design: .monospaced)).foregroundStyle(AgentsStyle.cyan)
-                        ForEach(ordered(usage)) { process in
-                            if matches(process) {
-                                DisclosureGroup {
-                                    processDetails(process).padding(.top, 8)
-                                } label: {
-                                    HStack {
-                                        Text(String(repeating: "  ", count: min(8, depth(process, usage))) + (process.id == instance ? "◆ " : "└ ") + process.name)
-                                        Spacer()
-                                        Text("#\(process.id.pid)")
-                                        Text(process.cpu.map { String(format: "%.1f%%", $0) } ?? "—").frame(width: 65, alignment: .trailing)
-                                        Text(bytes(process.memory)).frame(width: 90, alignment: .trailing)
-                                    }.font(.system(size: 11, design: .monospaced))
-                                }.padding(12).background(AgentsStyle.card, in: RoundedRectangle(cornerRadius: 3)).tint(AgentsStyle.cyan)
+                                row("进程 / 可读线程合计", "\(usage.processes.count) / \(usage.processes.compactMap { $0.detail?.threads }.reduce(0, +))")
+                                row("物理足迹合计", sum(usage.processes.compactMap { $0.detail?.footprint }))
+                                row("采样覆盖", usage.partial ? "PARTIAL / 缺失指标或正在建立基线" : "CPU + RSS / 全部成员已覆盖")
                             }
-                        }
-                    } else {
-                        Text("正在等待实例数据；实例可能已经退出。")
+                            DisclosureGroup {
+                                Text("CPU 以单核 100% 计；RSS 与物理足迹相加可能重复计算共享资源，虚拟内存不代表实际占用。磁盘计数从进程启动累计。BSD 状态与运行线程数是瞬时状态，不能证明 Agent 正在执行任务。\n\n未接入：会话、任务内容、模型、Token、费用、工具调用、远程 Agent、单进程网速。不会展示提示词、完整命令参数或环境变量。")
+                                    .font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 10)
+                            } label: {
+                                Text("DATA CONTRACT / 指标口径与采集范围").font(.system(size: 9, design: .monospaced)).tracking(0.6)
+                            }.tint(accent).padding(12).background(AgentsStyle.card)
+                        }.padding(18)
                     }
-                    GroupBox("采集范围与口径") {
-                        Text("当前用户的本地进程及子进程。CPU 单核 100%，RSS 和物理足迹相加可能包含共享资源；虚拟内存不代表实际占用。磁盘计数为进程生命周期累计值，速度为两次采样增量。线程状态是采样瞬间值，BSD 状态不能证明 Agent 正在执行任务。\n\n未接入：会话、任务内容、模型、Token、费用、工具调用、远程 Agent、单进程网速。不会读取或展示提示词、完整命令参数和环境变量。")
-                            .font(.system(size: 11)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(8)
-                    }
-                }.padding(.vertical, 3)
+                }
+            } else {
+                Spacer()
+                Text("NO PROCESS LINK / 正在等待实例数据").font(.system(size: 14, design: .monospaced)).foregroundStyle(accent)
+                Spacer()
             }
-        }.padding(20).frame(minWidth: 650, minHeight: 450).background(AgentsStyle.background).preferredColorScheme(.dark)
+            HStack(spacing: 8) {
+                Rectangle().fill(model.latest.available && current != nil ? AgentsStyle.green : .orange).frame(width: 5, height: 5)
+                Text(!model.latest.available ? "READ FAILED / 保留最后快照" : current == nil ? "OFFLINE / 实例已退出" : "LINK ESTABLISHED / 本地进程可见")
+                Spacer()
+                Text("120s BUFFER · READ ONLY · LOCAL")
+            }.font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary).padding(12)
+                .overlay(alignment: .top) { Rectangle().fill(accent.opacity(0.25)).frame(height: 1) }
+        }.frame(minWidth: 840, minHeight: 600)
+            .background {
+                AgentsStyle.background
+                Canvas { context, size in
+                    for y in stride(from: CGFloat(0), to: size.height, by: 4) {
+                        context.fill(Path(CGRect(x: 0, y: y, width: size.width, height: 1)), with: .color(accent.opacity(0.025)))
+                    }
+                }.allowsHitTesting(false).accessibilityHidden(true)
+            }.preferredColorScheme(.dark)
             .onAppear { if let current { lastKnown = current } }
             .onReceive(model.$latest) { snapshot in
                 if let value = snapshot.usages.first(where: { $0.id == instance }) { lastKnown = value }
             }
     }
+    private var header: some View {
+        HStack(spacing: 14) {
+            AgentSigil(seed: 0, color: accent).frame(width: 44, height: 44)
+            VStack(alignment: .leading, spacing: 5) {
+                Text((usage?.kind.rawValue.uppercased() ?? "AGENT") + " // DEEP SCAN")
+                    .font(.system(size: 21, weight: .bold, design: .monospaced)).tracking(1)
+                Text("PROCESS OBSERVATORY / ROOT #" + String(instance.pid))
+                    .font(.system(size: 9, design: .monospaced)).tracking(1.6).foregroundStyle(accent.opacity(0.8))
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(String(format: "%02d", usage?.processes.count ?? 0)).font(.system(size: 27, weight: .light, design: .monospaced)).foregroundStyle(accent)
+                Text("PROCESS NODES / " + model.latest.time.formatted(date: .omitted, time: .standard))
+                    .font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+            }
+        }.padding(20).overlay(alignment: .bottom) { Rectangle().fill(accent.opacity(0.4)).frame(height: 1) }
+    }
+    private func instrument(_ title: String, value: String, caption: String, channel: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.system(size: 9, design: .monospaced)).tracking(1).foregroundStyle(accent)
+            Text(value).font(.system(size: 23, weight: .medium, design: .monospaced)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+            trace(channel).frame(height: 30)
+            Text(caption).font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(12).background(AgentsStyle.card)
+            .overlay(Rectangle().stroke(accent.opacity(0.18), lineWidth: 1))
+            .overlay(alignment: .topLeading) { Rectangle().fill(accent).frame(width: 20, height: 2) }
+    }
+    private func trace(_ channel: Int) -> some View {
+        Canvas { context, size in
+            let start = model.latest.time.addingTimeInterval(-120)
+            let values: [Double?] = (0..<48).map { index in
+                let lower = start.addingTimeInterval(Double(index) * 2.5)
+                let readings = model.history.filter { $0.time >= lower && $0.time < lower.addingTimeInterval(2.5) }
+                    .compactMap { $0.snapshot.usages.first { $0.id == instance } }
+                    .compactMap { value -> Double? in
+                        switch channel {
+                        case 0: return value.cpu
+                        case 1: return value.memory.map { Double($0) }
+                        case 2: return value.readRate
+                        default: return value.writeRate
+                        }
+                    }
+                return readings.isEmpty ? nil : readings.reduce(0, +) / Double(readings.count)
+            }
+            let maximum = max(1, values.compactMap { $0 }.max() ?? 1)
+            for index in 0..<48 {
+                let x = CGFloat(index) * size.width / 48
+                let height = values[index].map { max(1, CGFloat(max(0, $0) / maximum) * size.height) } ?? 1
+                context.fill(Path(CGRect(x: x, y: size.height - height, width: max(1, size.width / 48 - 2), height: height)), with: .color(values[index] == nil ? .white.opacity(0.05) : accent.opacity(0.75)))
+            }
+        }.help("最近 120 秒真实采样，按当前窗口峰值自动缩放")
+    }
+    private func processNavigation(_ usage: AgentUsage) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("PROCESS / TOPOLOGY").font(.system(size: 10, weight: .bold, design: .monospaced)).tracking(1).foregroundStyle(accent)
+                Spacer()
+                Image(systemName: "point.3.connected.trianglepath.dotted").foregroundStyle(accent)
+            }.padding(.horizontal, 14).padding(.top, 16)
+            HStack(spacing: 6) {
+                Text(">").foregroundStyle(accent)
+                TextField("搜索节点 / PID / 路径", text: $query).textFieldStyle(.plain)
+            }.font(.system(size: 10, design: .monospaced)).padding(9).background(Color.black.opacity(0.4)).overlay(Rectangle().stroke(accent.opacity(0.25))).padding(.horizontal, 12)
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(ordered(usage).filter { matches($0) }) { process in
+                        Button { selection = process.id } label: {
+                            HStack(alignment: .top, spacing: 7) {
+                                Text(process.id == instance ? "◆" : "└").foregroundStyle(accent)
+                                    .padding(.leading, CGFloat(min(5, depth(process, usage))) * 7)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(process.name).font(.system(size: 11, weight: .medium, design: .monospaced)).lineLimit(1)
+                                    HStack {
+                                        Text("#" + String(process.id.pid))
+                                        Spacer()
+                                        Text(process.cpu.map { String(format: "%.1f%%", $0) } ?? "—")
+                                    }.font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                                }
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                                .background(selected?.id == process.id ? accent.opacity(0.12) : Color.clear)
+                                .overlay(alignment: .leading) { if selected?.id == process.id { Rectangle().fill(accent).frame(width: 2) } }
+                        }.buttonStyle(.plain)
+                    }
+                    if !query.isEmpty && !usage.processes.contains(where: { matches($0) }) {
+                        Text("NO MATCH / 无匹配节点").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).padding(18)
+                    }
+                }.padding(.horizontal, 6)
+            }
+        }.background(Color.black.opacity(0.15))
+    }
+    private func terminalSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("// " + title).font(.system(size: 10, weight: .bold, design: .monospaced)).tracking(1).foregroundStyle(accent)
+                Spacer()
+                Text("RO").font(.system(size: 8, design: .monospaced)).foregroundStyle(.secondary)
+            }.padding(12).background(accent.opacity(0.06))
+            VStack(spacing: 0, content: content).padding(.horizontal, 12).padding(.vertical, 4)
+        }.background(AgentsStyle.card).overlay(Rectangle().stroke(accent.opacity(0.2), lineWidth: 1))
+    }
     private func processDetails(_ p: AgentProcessUsage) -> some View {
-        VStack(spacing: 0) {
-            row("PID / PPID / UID", "\(p.id.pid) / \(p.detail.map { String($0.parent) } ?? "—") / \(p.detail.map { String($0.uid) } ?? "—")")
-            row("启动时间", started(p.id.started))
-            row("可执行文件", p.detail?.executable.isEmpty == false ? p.detail!.executable : "不可读")
-            row("脚本 / 模块入口", p.detail?.entrypoint.isEmpty == false ? p.detail!.entrypoint : "未提供 / 原生进程")
-            row("BSD 状态", p.detail.map { state($0.status) } ?? "不可读")
-            row("线程 / 运行线程 / 优先级", number(p.detail?.threads) + " / " + number(p.detail?.runningThreads) + " / " + number(p.detail?.priority))
-            row("RSS / 物理足迹 / 虚拟内存", bytes(p.memory) + " / " + bytes(p.detail?.footprint) + " / " + bytes(p.detail?.virtualBytes))
-            row("累计用户 / 内核 CPU 时间", seconds(p.detail?.userNS) + " / " + seconds(p.detail?.systemNS))
-            row("磁盘累计读 / 写", bytes(p.detail?.readBytes) + " / " + bytes(p.detail?.writtenBytes))
-            row("磁盘读 / 写速率", MetricsFormat.rate(p.readRate) + " / " + MetricsFormat.rate(p.writeRate))
-            row("缺页 / 页入 / 上下文切换累计", number(p.detail?.faults) + " / " + number(p.detail?.pageins) + " / " + number(p.detail?.switches))
+        VStack(spacing: 14) {
+            terminalSection("IDENTITY / 节点身份") {
+                row("PID / PPID / UID", "\(p.id.pid) / \(p.detail.map { String($0.parent) } ?? "—") / \(p.detail.map { String($0.uid) } ?? "—")")
+                row("启动时间", started(p.id.started))
+                row("可执行文件", p.detail.flatMap { $0.executable.isEmpty ? nil : $0.executable } ?? "不可读")
+                row("脚本 / 模块入口", p.detail.flatMap { $0.entrypoint.isEmpty ? nil : $0.entrypoint } ?? "未提供 / 原生进程")
+                row("BSD 状态", p.detail.map { state($0.status) } ?? "不可读")
+            }
+            terminalSection("RESOURCES / 执行资源") {
+                row("CPU / RSS", (p.cpu.map { String(format: "%.2f%%", $0) } ?? "不可读") + " / " + bytes(p.memory))
+                row("线程 / 运行 / 优先级", number(p.detail?.threads) + " / " + number(p.detail?.runningThreads) + " / " + number(p.detail?.priority))
+                row("物理足迹 / 虚拟内存", bytes(p.detail?.footprint) + " / " + bytes(p.detail?.virtualBytes))
+                row("用户 / 内核 CPU 累计", seconds(p.detail?.userNS) + " / " + seconds(p.detail?.systemNS))
+            }
+            terminalSection("IO + KERNEL / 内核计数") {
+                row("磁盘累计读 / 写", bytes(p.detail?.readBytes) + " / " + bytes(p.detail?.writtenBytes))
+                row("磁盘读 / 写速率", MetricsFormat.rate(p.readRate) + " / " + MetricsFormat.rate(p.writeRate))
+                row("缺页 / 页入 / 上下文切换", number(p.detail?.faults) + " / " + number(p.detail?.pageins) + " / " + number(p.detail?.switches))
+            }
         }.textSelection(.enabled)
     }
     private func row(_ title: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(title).foregroundStyle(.secondary).frame(width: 165, alignment: .leading)
-            Text(value).frame(maxWidth: .infinity, alignment: .leading)
-        }.font(.system(size: 11, design: .monospaced)).padding(.vertical, 6).textSelection(.enabled)
+        HStack(alignment: .top, spacing: 14) {
+            Text(title).foregroundStyle(.secondary).frame(width: 155, alignment: .leading)
+            Text(value).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+        }.font(.system(size: 10, design: .monospaced)).padding(.vertical, 9).textSelection(.enabled)
+            .overlay(alignment: .bottom) { Rectangle().fill(accent.opacity(0.08)).frame(height: 1) }
     }
     private func matches(_ p: AgentProcessUsage) -> Bool {
         query.isEmpty || "\(p.name) \(p.id.pid) \(p.detail?.executable ?? "") \(p.detail?.entrypoint ?? "")".localizedCaseInsensitiveContains(query)

@@ -15,6 +15,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     private var resignObserver: NSObjectProtocol?
     private var previewWindow: NSWindow?
     private var detailWindows: [AgentProcessID: NSWindow] = [:]
+    private var didPreviewDetails = false
     private var interval: Double {
         let value = UserDefaults.standard.double(forKey: "agents.interval")
         return [2.0, 5, 10].contains(value) ? value : 2
@@ -57,6 +58,17 @@ final class AgentsController: NSObject, NSPopoverDelegate {
             DispatchQueue.main.async {
                 self.busy = false; guard self.running else { return }
                 self.model.record(snapshot)
+                if !self.didPreviewDetails, let usage = snapshot.usages.max(by: { $0.processes.count < $1.processes.count }),
+                   CommandLine.arguments.contains("--preview-agent-details") || CommandLine.arguments.contains("--export-agent-details") {
+                    self.didPreviewDetails = true
+                    if CommandLine.arguments.contains("--preview-agent-details") { self.showDetails(usage.id) }
+                    if let index = CommandLine.arguments.firstIndex(of: "--export-agent-details"), index + 1 < CommandLine.arguments.count {
+                        let destination = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                            self?.exportDetails(usage.id, to: destination); NSApp.terminate(nil)
+                        }
+                    }
+                }
                 self.item.button?.title = snapshot.available ? (snapshot.usages.count > 99 ? "99+" : String(format: "%2d", snapshot.usages.count)) : " —"
                 let names = snapshot.usages.map { $0.kind.rawValue }.joined(separator: "、")
                 let cpu = snapshot.totalCPU.map { String(format: "%.1f%%", $0) } ?? "采样中"
@@ -107,7 +119,7 @@ final class AgentsController: NSObject, NSPopoverDelegate {
     }
     private func showDetails(_ id: AgentProcessID) {
         if detailWindows[id] == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 720), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.title = "Agent 详情 · PID \(id.pid)"
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(rootView: AgentDetailsView(model: model, instance: id))
@@ -115,6 +127,21 @@ final class AgentsController: NSObject, NSPopoverDelegate {
         }
         popover.performClose(nil)
         NSApp.activate(ignoringOtherApps: true); detailWindows[id]?.makeKeyAndOrderFront(nil)
+    }
+    /// Export only this module's own view with live samples, for layout review.
+    private func exportDetails(_ id: AgentProcessID, to destination: URL) {
+        let host = NSHostingView(rootView: AgentDetailsView(model: model, instance: id))
+        let size = NSSize(width: 1040, height: 820)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: .borderless, backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .darkAqua); window.contentView = host
+        host.frame = NSRect(origin: .zero, size: size); host.layoutSubtreeIfNeeded()
+        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { return }
+        do {
+            try data.write(to: destination, options: .atomic)
+            print("Exported agent detail view: \(bitmap.pixelsWide)×\(bitmap.pixelsHigh)")
+        } catch { print("Agent detail export failed: \(error.localizedDescription)") }
     }
     func layoutDescription() -> String {
         guard let button = item.button, let window = button.window else { return "agent status window unavailable" }
