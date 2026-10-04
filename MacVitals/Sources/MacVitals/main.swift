@@ -20,8 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let menu = NSMenu()
     private var interval: Double { let v = UserDefaults.standard.double(forKey: "interval"); return [1.0, 2, 5, 10].contains(v) ? v : 2 }
     func applicationDidFinishLaunching(_ notification: Notification) {
-        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        item = NSStatusBar.system.statusItem(withLength: StatusBarText.width)
+        item.button?.font = StatusBarText.font
         item.button?.toolTip = "MacVitals · 点击查看系统状态"
         item.button?.target = self
         item.button?.action = #selector(showDashboard)
@@ -54,9 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private func update() {
         let s = monitor.sample()
-        let cpu = s.cpu.map { String(format: "%.0f%%", $0) } ?? "…"
-        let memory = s.memoryPercent.map { "\(Int($0))%" } ?? "…"
-        item.button?.title = "CPU \(cpu)  MEM \(memory)"
+        item.button?.title = StatusBarText.title(cpu: s.cpu, memory: s.memoryPercent)
         dashboard.record(s)
     }
     private func updateDetails() {
