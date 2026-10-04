@@ -1,6 +1,8 @@
-# usefulTools
+# MacVitals
 
-一些实用工具。
+A native macOS menu bar system monitor with CPU, memory, temperature, fan speed, network traffic, battery and disk telemetry instruments. Built with SwiftUI.
+
+原生 macOS 菜单栏系统监控工具，提供实时硬件遥测仪表。
 
 ## MacVitals
 
